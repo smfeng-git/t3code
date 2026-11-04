@@ -29,13 +29,23 @@ export const PiSettings = makeProviderSettingsSchema(
         providerSettingsForm: { clearWhenEmpty: "omit" },
       }),
     ),
+    sharedBackendUrl: Schema.optionalKey(
+      TrimmedString.pipe(
+        Schema.annotateKey({
+          title: "Pi Web shared backend",
+          description:
+            "Connect to Pi Web and automatically sync sessions from all directories. Tool permissions are controlled by Pi Web; use Full access. Leave empty to launch Pi locally.",
+          providerSettingsForm: { placeholder: "http://127.0.0.1:30141", clearWhenEmpty: "omit" },
+        }),
+      ),
+    ),
     customModels: Schema.Array(CustomModelSetting).pipe(
       Schema.withDecodingDefault(Effect.succeed([])),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
   {
-    order: ["binaryPath", "launchArgs"],
+    order: ["binaryPath", "launchArgs", "sharedBackendUrl"],
   },
 );
 export type PiSettings = typeof PiSettings.Type;

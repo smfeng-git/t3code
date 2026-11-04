@@ -34,6 +34,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -550,6 +551,83 @@ const startTurn = Effect.fnUntraced(function* (
 });
 
 describe("PiAdapterV2", () => {
+  it.effect("uses the shared backend without spawning Pi or aborting it when T3 detaches", () => {
+    const requests: PiRpcRecord[] = [];
+    let streaming = false;
+    let publish = (_event: PiRpcRecord) => {};
+    const sessionId = "01a1355e-66c7-7447-adb8-9a0eca75b89d";
+    const sessionFile = `/shared/${sessionId}.jsonl`;
+    const fetch: typeof globalThis.fetch = async (url, options) => {
+      if (String(url).endsWith("/events"))
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              publish = (event) =>
+                controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+              publish({ type: "connected", isStreaming: streaming });
+            },
+            cancel() {
+              publish = () => {};
+            },
+          }),
+        );
+      const command = JSON.parse(String(options?.body)) as PiRpcRecord;
+      requests.push(command);
+      const data =
+        command.type === "get_state"
+          ? {
+              sessionId,
+              sessionFile,
+              isStreaming: streaming,
+              model: { provider: "test", id: "model" },
+            }
+          : command.type === "get_entries"
+            ? { entries: [], leafId: null }
+            : command.type === "get_available_models"
+              ? { models: [] }
+              : null;
+      if (command.type === "prompt") {
+        streaming = true;
+        publish({ type: "agent_start" });
+      }
+      return Response.json({ success: true, data });
+    };
+    return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const adapter = yield* makePiAdapterV2({
+          instanceId: PI_INSTANCE_ID,
+          settings: {
+            enabled: true,
+            binaryPath: "must-not-run",
+            launchArgs: "",
+            customModels: [],
+            sharedBackendUrl: "http://pi.test",
+          },
+          environment: {},
+        });
+        const runtime = yield* adapter.openSession({
+          threadId: THREAD_ID,
+          providerSessionId: SESSION_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+          initialNativeThreadId: sessionFile,
+        });
+        const thread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        assert.equal(thread.nativeThreadRef?.nativeId, sessionFile);
+        yield* startTurn(runtime, thread);
+        yield* Effect.yieldNow;
+        const prompt = requests.find((command) => command.type === "prompt");
+        assert.equal(prompt?.clientMessageId, `message:${THREAD_ID}:1`);
+      }).pipe(Effect.scoped);
+      assert.isFalse(requests.some((command) => command.type === "abort"));
+      assert.isTrue(streaming);
+    }).pipe(Effect.provideService(FetchHttpClient.Fetch, fetch), Effect.provide(layerTest));
+  });
+
   it.effect("keeps native image bytes and the saved path in the prompt", () =>
     Effect.gen(function* () {
       const host = yield* ProviderHost.ProviderHost;

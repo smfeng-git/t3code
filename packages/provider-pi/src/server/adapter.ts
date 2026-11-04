@@ -71,6 +71,7 @@ import {
   resolvePiLaunchArgs,
 } from "./mcpInjection.ts";
 import { PI_FILE_CHANGE_TOOLS } from "./mcpExtensionSource.ts";
+import { makePiWebRpcConnection } from "./piWebRpc.ts";
 
 export const PI_PROVIDER = ProviderDriverKind.make("pi");
 const PI_DRIVER_KIND = PI_PROVIDER;
@@ -427,6 +428,40 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
   const host = yield* ProviderHost.ProviderHost;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const { continuationRequests } = options;
+  const sharedBackend = Boolean(options.settings.sharedBackendUrl);
+  const capabilities = sharedBackend
+    ? {
+        ...PiProviderCapabilitiesV2,
+        runtimePolicy: { enforcement: "native" as const },
+        threads: {
+          ...PiProviderCapabilitiesV2.threads,
+          canRollbackThread: false,
+          canForkThread: false,
+          canForkFromTurn: false,
+        },
+        turns: {
+          ...PiProviderCapabilitiesV2.turns,
+          supportsActiveSteering: false,
+          supportsQueuedMessages: false,
+        },
+        streaming: {
+          ...PiProviderCapabilitiesV2.streaming,
+          streamsAssistantText: false,
+          streamsReasoning: false,
+          streamsToolOutput: false,
+        },
+        tools: {
+          ...PiProviderCapabilitiesV2.tools,
+          emitsToolStarted: false,
+          supportsMcpTools: false,
+        },
+        subagents: {
+          ...PiProviderCapabilitiesV2.subagents,
+          supportsSubagents: false,
+          emitsSubagentLifecycle: false,
+        },
+      }
+    : PiProviderCapabilitiesV2;
 
   const protocolError = (detail: string, payload?: unknown) =>
     new ProviderAdapter.ProviderAdapterProtocolError({
@@ -439,7 +474,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
     instanceId: options.instanceId,
     driver: PI_PROVIDER,
     getCapabilities: Effect.fn("PiAdapter.getCapabilities")(function () {
-      return Effect.succeed(PiProviderCapabilitiesV2);
+      return Effect.succeed(capabilities);
     }),
     planSelectionTransition: Effect.fn("PiAdapter.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
@@ -449,6 +484,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
     ) {
       const scope = yield* Effect.scope;
       const cwd = input.runtimePolicy.cwd ?? host.paths.cwd;
+      if (sharedBackend && input.runtimePolicy.runtimeMode !== "full-access") {
+        return yield* protocolError(
+          "Pi Web controls shared-session permissions. Select Full access to connect.",
+        );
+      }
       const mcpSession = yield* mcpSessions.read(input.threadId);
       const provideCacheFs = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) =>
         effect.pipe(
@@ -462,56 +502,73 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               }),
           ),
         );
-      // Always inject the permission hook even without MCP credentials; otherwise Supervised becomes unrestricted.
-      const extensionPath = yield* provideCacheFs(
-        materializePiT3McpExtension(host.paths.providerStatusCacheDir),
-      );
       const resolvedLaunchArgs = resolvePiLaunchArgs(options.settings.launchArgs);
-      if (!resolvedLaunchArgs.ok) {
-        return yield* protocolError(resolvedLaunchArgs.message);
-      }
-      const launch = buildPiRpcLaunch({
-        launchArgs: resolvedLaunchArgs.args,
-        environment: options.environment,
-        mcpSession,
-        extensionPath,
-        runtimeMode: input.runtimePolicy.runtimeMode,
-      });
-      const scopedLaunch = yield* agentScope.wrap({
-        command: options.settings.binaryPath || "pi",
-        args: launch.args,
-        name: "pi",
-        threadId: input.threadId,
-        env: launch.env,
-      });
-      // Finalizers run in reverse order: reap detached work after terminating Pi.
-      const scopeUnit = scopedLaunch.unit;
-      const stopScope =
-        scopeUnit === undefined ? Effect.void : yield* Effect.cached(agentScope.stop(scopeUnit));
-      yield* Effect.addFinalizer(() => stopScope);
-      const connection: PiRpcConnection = yield* makePiRpcConnection({
-        command: scopedLaunch.command,
-        args: scopedLaunch.args,
-        cwd,
-        env: launch.env,
-      }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.mapError(
-          (cause) =>
-            new ProviderAdapter.ProviderAdapterOpenSessionError({
-              driver: PI_PROVIDER,
-              providerSessionId: input.providerSessionId,
-              cause,
-            }),
-        ),
-      );
-      // Detached children can keep stdout open after Pi exits.
-      if (scopeUnit !== undefined) {
-        yield* connection.exited.pipe(
-          Effect.matchEffect({ onFailure: () => stopScope, onSuccess: () => stopScope }),
-          Effect.forkIn(scope),
-        );
-      }
+      if (!resolvedLaunchArgs.ok) return yield* protocolError(resolvedLaunchArgs.message);
+      const sharedConnection = sharedBackend
+        ? yield* makePiWebRpcConnection({
+            url: options.settings.sharedBackendUrl ?? "",
+            cwd,
+            ...(options.environment.PI_WEB_PASSWORD
+              ? { password: options.environment.PI_WEB_PASSWORD }
+              : {}),
+            ...(input.initialNativeThreadId
+              ? { initialNativeThreadId: input.initialNativeThreadId }
+              : {}),
+          })
+        : undefined;
+      const connection: PiRpcConnection =
+        sharedConnection ??
+        (yield* Effect.gen(function* () {
+          // Always inject the permission hook even without MCP credentials; otherwise Supervised becomes unrestricted.
+          const extensionPath = yield* provideCacheFs(
+            materializePiT3McpExtension(host.paths.providerStatusCacheDir),
+          );
+          const launch = buildPiRpcLaunch({
+            launchArgs: resolvedLaunchArgs.args,
+            environment: options.environment,
+            mcpSession,
+            extensionPath,
+            runtimeMode: input.runtimePolicy.runtimeMode,
+          });
+          const scopedLaunch = yield* agentScope.wrap({
+            command: options.settings.binaryPath || "pi",
+            args: launch.args,
+            name: "pi",
+            threadId: input.threadId,
+            env: launch.env,
+          });
+          // Finalizers run in reverse order: reap detached work after terminating Pi.
+          const scopeUnit = scopedLaunch.unit;
+          const stopScope =
+            scopeUnit === undefined
+              ? Effect.void
+              : yield* Effect.cached(agentScope.stop(scopeUnit));
+          yield* Effect.addFinalizer(() => stopScope);
+          const localConnection: PiRpcConnection = yield* makePiRpcConnection({
+            command: scopedLaunch.command,
+            args: scopedLaunch.args,
+            cwd,
+            env: launch.env,
+          }).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: PI_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
+            ),
+          );
+          // Detached children can keep stdout open after Pi exits.
+          if (scopeUnit !== undefined) {
+            yield* localConnection.exited.pipe(
+              Effect.matchEffect({ onFailure: () => stopScope, onSuccess: () => stopScope }),
+              Effect.forkIn(scope),
+            );
+          }
+          return localConnection;
+        }));
       const now = yield* DateTime.now;
       let sessionEntity: OrchestrationV2ProviderSession = {
         id: input.providerSessionId,
@@ -520,7 +577,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         status: "ready",
         cwd,
         model: input.modelSelection.model,
-        capabilities: PiProviderCapabilitiesV2,
+        capabilities,
         createdAt: now,
         updatedAt: now,
         lastError: null,
@@ -1700,6 +1757,12 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       });
 
       const handleSessionEvent = Effect.fnUntraced(function* (event: PiRpcRecord) {
+        if (
+          sharedBackend &&
+          threadState?.activeTurn == null &&
+          event["type"] !== "extension_ui_request"
+        )
+          return;
         // Model hooks can show dialogs before turn ownership; keep requests session-scoped and buffer output.
         const interactiveUiRequest =
           event["type"] === "extension_ui_request" &&
@@ -2375,6 +2438,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             driver: PI_PROVIDER,
             providerThread,
           });
+        if (sharedConnection) yield* sharedConnection.attach();
         return providerThread;
       });
 
@@ -2542,8 +2606,19 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             const continuation =
               turnInput.message.createdBy === "agent" &&
               turnInput.message.creationSource === "provider";
+            if (sharedBackend) {
+              const snapshot = yield* request({ type: "get_state" });
+              if (
+                recordField(snapshot, "isStreaming") === true ||
+                recordField(snapshot, "isCompacting") === true
+              ) {
+                return yield* protocolError(
+                  "Pi Web is busy. Wait for the current task before sending from T3.",
+                );
+              }
+            }
             if (!continuation) yield* applySelection(turnInput.modelSelection);
-            if (turnInput.appThread.title !== appliedSessionName) {
+            if (!sharedBackend && turnInput.appThread.title !== appliedSessionName) {
               yield* request({
                 type: "set_session_name",
                 name: turnInput.appThread.title,
@@ -2640,6 +2715,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                   record: {
                     type: "prompt",
                     message: payload.message,
+                    ...(sharedBackend ? { clientMessageId: turnInput.message.messageId } : {}),
                     streamingBehavior: "steer",
                     ...(payload.images.length === 0 ? {} : { images: payload.images }),
                   },
@@ -2701,6 +2777,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         ),
         steerTurn: Effect.fn("PiAdapter.steerTurn")(
           function* (steerInput: ProviderAdapter.ProviderAdapterV2SteerInput) {
+            if (sharedBackend)
+              return yield* protocolError(
+                "Wait for the shared Pi session to finish before sending another message.",
+              );
             const turn = threadState?.activeTurn ?? null;
             if (turn === null || turn.providerTurn.id !== steerInput.providerTurnId) {
               return yield* protocolError(`Pi turn ${steerInput.providerTurnId} is not active`);
@@ -2948,6 +3028,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         ),
         rollbackThread: Effect.fn("PiAdapter.rollbackThread")(
           function* (rollbackInput) {
+            if (sharedBackend)
+              return yield* protocolError("Change shared session branches in Pi Web.");
             const state = threadState;
             if (state === null) {
               return yield* protocolError("Pi session has no registered thread");
@@ -3075,6 +3157,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         ),
         forkThread: Effect.fn("PiAdapter.forkThread")(
           function* (forkInput) {
+            if (sharedBackend) return yield* protocolError("Fork shared sessions in Pi Web.");
             if (threadState?.activeTurn != null) {
               return yield* protocolError("Cannot fork while a Pi turn is active");
             }

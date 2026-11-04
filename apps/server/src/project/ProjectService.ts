@@ -38,6 +38,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 export interface ProjectCreateInput extends ProjectCreatePayload {
   readonly commandId: CommandId;
   readonly projectId: ProjectId;
+  readonly allowMissingWorkspaceRoot?: boolean;
 }
 
 export interface ProjectUpdateInput extends ProjectUpdatePayload {
@@ -129,7 +130,7 @@ export class ProjectService extends Context.Service<
     ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
     readonly getByWorkspaceRoot: (
       workspaceRoot: string,
-      options?: { readonly includeDeleted?: boolean },
+      options?: { readonly includeDeleted?: boolean; readonly allowMissingWorkspaceRoot?: boolean },
     ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
     readonly snapshot: Effect.Effect<ProjectSnapshot, ProjectOperationError>;
     /**
@@ -207,10 +208,12 @@ export const make = Effect.gen(function* () {
     readonly projectId?: ProjectId;
     readonly workspaceRoot: string;
     readonly createIfMissing?: boolean;
+    readonly allowMissing?: boolean;
   }) =>
     workspacePaths
       .normalizeWorkspaceRoot(input.workspaceRoot, {
         createIfMissing: input.createIfMissing ?? false,
+        allowMissing: input.allowMissing ?? false,
       })
       .pipe(
         Effect.mapError(
@@ -321,7 +324,10 @@ export const make = Effect.gen(function* () {
   const getByWorkspaceRoot: ProjectService["Service"]["getByWorkspaceRoot"] = Effect.fn(
     "ProjectService.getByWorkspaceRoot",
   )(function* (workspaceRoot, options) {
-    const normalized = yield* normalizeWorkspaceRoot({ workspaceRoot });
+    const normalized = yield* normalizeWorkspaceRoot({
+      workspaceRoot,
+      allowMissing: options?.allowMissingWorkspaceRoot ?? false,
+    });
     const row = yield* (
       options?.includeDeleted === true
         ? projects
@@ -344,6 +350,7 @@ export const make = Effect.gen(function* () {
         projectId: input.projectId,
         workspaceRoot: input.workspaceRoot,
         createIfMissing: input.createWorkspaceRootIfMissing ?? false,
+        allowMissing: input.allowMissingWorkspaceRoot ?? false,
       });
       yield* commit({
         type: "project.create",

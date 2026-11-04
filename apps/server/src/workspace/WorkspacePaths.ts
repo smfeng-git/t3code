@@ -85,7 +85,7 @@ export class WorkspacePaths extends Context.Service<
   {
     readonly normalizeWorkspaceRoot: (
       workspaceRoot: string,
-      options?: { readonly createIfMissing?: boolean },
+      options?: { readonly createIfMissing?: boolean; readonly allowMissing?: boolean },
     ) => Effect.Effect<
       string,
       | WorkspaceRootNotExistsError
@@ -158,6 +158,7 @@ const make = Effect.gen(function* () {
         "verify-created",
       );
     }
+    if (!workspaceStat && options?.allowMissing) return normalizedWorkspaceRoot;
     if (!workspaceStat) {
       return yield* new WorkspaceRootNotExistsError({
         workspaceRoot,

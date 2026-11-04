@@ -52,6 +52,22 @@ Blocking `select`, `confirm`, `input`, and `editor` dialogs work in T3 Code. Not
 the work log. Pi terminal decoration such as titles, status lines, and widgets does not have a T3
 Code equivalent.
 
+## Shared Pi Web sessions
+
+With a Pi Web backend that provides the shared-session API, set **Pi Web shared backend** in
+the Pi provider settings to its URL, for example `http://127.0.0.1:30141` when both servers run
+in the same WSL distribution. If Pi Web requires a password, add `PI_WEB_PASSWORD` as a sensitive
+provider environment variable.
+
+T3 discovers sessions from every directory automatically, including new directories created later.
+Completed messages update approximately every five seconds after the initial history scan. Both
+clients send to the same Pi Web session. Keep Pi Web running; closing a T3 client does not stop it.
+While that session is busy, wait for it to finish before sending another message from T3.
+
+Shared sessions require **Full access** in T3: Pi Web controls tool permissions, and the thread
+shows that explicitly. Use Pi Web for branching and rollback. Clearing the shared backend URL
+returns this provider instance to launching Pi locally.
+
 ## Permission Modes
 
 T3 Code applies the composer permission mode through Pi's blocking tool hook:

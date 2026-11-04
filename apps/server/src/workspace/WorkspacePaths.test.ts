@@ -23,6 +23,18 @@ const makeTempDir = Effect.fn("makeTempDir")(function* () {
 
 it.layer(layerTest)("WorkspacePathsLive", (it) => {
   describe("normalizeWorkspaceRoot", () => {
+    it.effect("keeps missing historical workspaces without recreating their directories", () =>
+      Effect.gen(function* () {
+        const paths = yield* WorkspacePaths.WorkspacePaths;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const missing = path.join(yield* makeTempDir(), "deleted-worktree");
+        expect(yield* paths.normalizeWorkspaceRoot(missing, { allowMissing: true })).toBe(missing);
+        expect(yield* fs.exists(missing)).toBe(false);
+        const error = yield* paths.normalizeWorkspaceRoot(missing).pipe(Effect.flip);
+        expect(error._tag).toBe("WorkspaceRootNotExistsError");
+      }),
+    );
     it.effect("creates missing directories when createIfMissing is enabled", () =>
       Effect.gen(function* () {
         const workspacePaths = yield* WorkspacePaths.WorkspacePaths;

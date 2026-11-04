@@ -18,6 +18,10 @@
     "./server/usage": {
       "types": "./src/server/usage.ts",
       "import": "./src/server/usage.ts"
+    },
+    "./server/piWebClient": {
+      "types": "./src/server/piWebClient.ts",
+      "import": "./src/server/piWebClient.ts"
     }
   },
   "scripts": {
