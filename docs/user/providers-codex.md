@@ -25,6 +25,21 @@ T3 Code can use your installed Codex and its existing login. Run `codex login`
 on the environment's machine to sign in. [Provider setup](./install.md#providers)
 covers installation and custom configuration.
 
+## Follow saved conversations
+
+For an existing local Codex installation, enable **Follow Codex conversations**
+in its provider settings to discover saved conversations across all directories
+in that Codex home. Archived conversations start in Archive. New completed turns
+normally appear within one polling cycle (about five seconds), including on devices
+connected to this T3 environment. The initial history scan can take longer.
+
+Following history does not take control of the conversation. Before sending from
+T3, release it in the other Codex client; an occupied conversation reports a writer
+conflict instead of interrupting that client. This is not simultaneous control of
+the official Codex desktop app. Images are currently represented by a placeholder;
+destructive history edits and deletions are not mirrored. Turn off the setting to
+stop following; existing T3 history is retained.
+
 ## Use multiple accounts
 
 Add another ChatGPT account in **Settings → Providers**, then select the account

@@ -630,6 +630,13 @@ export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fi
 
 export const CodexSettings = makeProviderSettingsSchema(
   {
+    syncSessions: Schema.optionalKey(Schema.Boolean).pipe(
+      Schema.annotateKey({
+        title: "Follow Codex conversations",
+        description:
+          "Automatically follow saved conversations from every directory in this Codex home. Sending requires the other Codex client to release the conversation.",
+      }),
+    ),
     setupMode: Schema.optionalKey(Schema.Literals(["managed", "existing"])).pipe(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
@@ -680,7 +687,7 @@ export const CodexSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs", "syncSessions"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;

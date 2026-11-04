@@ -14,6 +14,8 @@ import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as AgentSessionImporter from "../project/AgentSessionImporter.ts";
 import * as AgentSessionScanner from "../project/AgentSessionScanner.ts";
 import * as PiSharedSessions from "../project/PiSharedSessions.ts";
+import * as CodexSharedSessions from "../project/CodexSharedSessions.ts";
+import * as CodexHistorySource from "../project/CodexHistorySource.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -390,6 +392,22 @@ export const layerProduction = Layer.mergeAll(
   ),
   layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,
+  CodexSharedSessions.worker.pipe(
+    Layer.provide(
+      CodexSharedSessions.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            layerProjectService,
+            layerEventSink,
+            ProjectionStore.layer,
+            IdAllocator.layer,
+            TurnItemPositionStore.layer,
+            CodexHistorySource.layer,
+          ),
+        ),
+      ),
+    ),
+  ),
   PiSharedSessions.worker.pipe(
     Layer.provide(
       PiSharedSessions.layer.pipe(
