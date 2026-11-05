@@ -80,7 +80,7 @@ const make = Effect.gen(function* () {
     const existing = yield* Effect.option(projections.getThread(threadId));
     if (Option.isSome(existing) && existing.value.deletedAt !== null) return;
     const turns = yield* source.turns(instanceId, session.id, checkpoint?.turn);
-    const signature = codexHistoryFingerprint(turns);
+    const signature = codexHistoryFingerprint([turns, "control-notice-v2"]);
     if (checkpoint?.signature === signature) return;
     if (Option.isNone(existing)) {
       const found = yield* projects.getByWorkspaceRoot(session.cwd, {
@@ -185,12 +185,19 @@ const make = Effect.gen(function* () {
       "runs",
     ]);
     const noticeId = TurnItemId.make(`codex-shared:control:${threadId}`);
-    if (!records.turnItems.some((item) => item.id === noticeId)) {
+    const noticeMessage =
+      "Codex history sync is enabled. Saved messages from other clients appear automatically. If sending reports an active writer, use a shared backend or release the conversation in the other client.";
+    if (
+      !records.turnItems.some(
+        (item) =>
+          item.id === noticeId && item.type === "system_notice" && item.message === noticeMessage,
+      )
+    ) {
       const at = DateTime.makeUnsafe(session.createdAt * 1000);
       yield* sink.write({
         events: [
           {
-            id: EventId.make(noticeId),
+            id: EventId.make(`${noticeId}:v2`),
             type: "turn-item.updated",
             threadId,
             occurredAt: at,
@@ -210,8 +217,7 @@ const make = Effect.gen(function* () {
               completedAt: at,
               updatedAt: at,
               type: "system_notice",
-              message:
-                "Following saved Codex messages. To continue here, first release this conversation in the other Codex client. T3 does not interrupt or take over an active conversation.",
+              message: noticeMessage,
             },
           },
         ],
