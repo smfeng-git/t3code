@@ -18,9 +18,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Checkout without vendored reference submodules
+        shell: bash
+        run: |
+          git init .
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
       - run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
       - uses: ./.github/actions/setup-ci-deps
         with:
@@ -44,9 +49,14 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Checkout without vendored reference submodules
+        shell: bash
+        run: |
+          git init .
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
       - uses: ./.github/actions/setup-ci-deps
         with:
           install-args: --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
@@ -75,9 +85,14 @@ jobs:
       T3CODE_FORK_BUILD: "1"
       T3CODE_MOBILE_VERSION: "2.2.0"
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Checkout without vendored reference submodules
+        shell: bash
+        run: |
+          git init .
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -124,9 +139,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Checkout without vendored reference submodules
+        shell: bash
+        run: |
+          git init .
+          git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
       - uses: actions/download-artifact@v4
         with:
           pattern: custom-*
