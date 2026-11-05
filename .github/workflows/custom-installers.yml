@@ -74,6 +74,7 @@ jobs:
       - name: Build unsigned Windows installer with custom WSL backend
         shell: pwsh
         run: |
+          $env:PATH = "$env:USERPROFILE\.vite-plus\bin;$env:PATH"
           $runtimeArchive = (Get-ChildItem release-cli/*.tar.gz | Select-Object -First 1).FullName
           node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64 --build-version $env:RELEASE_VERSION --wsl-runtime $runtimeArchive --output-dir release-custom
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
