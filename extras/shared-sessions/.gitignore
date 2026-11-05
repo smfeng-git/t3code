@@ -1,0 +1,5 @@
+codex/config.json
+codex/approved-versions.json
+codex/codex-shared.cmd
+codex/*.log
+codex/__pycache__/

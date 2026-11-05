@@ -1,0 +1,299 @@
+diff --git a/lib/pi-types.ts b/lib/pi-types.ts
+index 52a7730..e12ad17 100644
+--- a/lib/pi-types.ts
++++ b/lib/pi-types.ts
+@@ -137,6 +137,7 @@ export interface AgentSessionLike {
+   readonly model: ModelLike | undefined;
+   readonly modelRuntime: {
+     getModel: (provider: string, modelId: string) => ModelLike | undefined;
++    getAvailableSnapshot?: () => readonly ModelLike[];
+     refresh: (options?: { allowNetwork?: boolean }) => Promise<unknown>;
+   };
+   readonly sessionManager: SessionManager;
+diff --git a/lib/rpc-manager.ts b/lib/rpc-manager.ts
+index 5119d66..32a265d 100644
+--- a/lib/rpc-manager.ts
++++ b/lib/rpc-manager.ts
+@@ -1,3 +1,4 @@
++import { captureClientMessage, findClientMessageLink } from "./shared-input";
+ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+ import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme, type ModelRuntime } from "@earendil-works/pi-coding-agent";
+ import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
+@@ -847,6 +848,17 @@ export class AgentSessionWrapper {
+         // this submission starts a run or joins its streaming queue.
+         const releaseAdmission = await this.acquirePromptAdmission();
+         try {
++          const clientMessageId = command.clientMessageId;
++          if (clientMessageId !== undefined && (typeof clientMessageId !== "string" || !clientMessageId || clientMessageId.length > 512)) {
++            throw new Error("Invalid client message id");
++          }
++          if (typeof clientMessageId === "string") {
++            const previous = findClientMessageLink(this.inner.sessionManager, clientMessageId);
++            if (previous) return previous;
++            if (this.pendingPromptCount > 0 || this.inner.isStreaming || this.inner.isCompacting) {
++              throw new Error("Pi Web is busy. Wait for the current task before sending from T3.");
++            }
++          }
+           if (this.inner.isBashRunning) {
+             throw new Error("Cannot send a prompt while a shell command is running");
+           }
+@@ -918,6 +930,9 @@ export class AgentSessionWrapper {
+               if (this.mcpPromptWait === wait) this.mcpPromptWait = null;
+             }
+           }
++          const clientInput = typeof clientMessageId === "string"
++            ? captureClientMessage(this.inner.sessionManager, (listener) => this.onEvent(listener), clientMessageId)
++            : undefined;
+           let prompt: Promise<void>;
+           try {
+             prompt = this.inner.prompt(command.message as string, {
+@@ -931,9 +946,15 @@ export class AgentSessionWrapper {
+               preflightResult: () => acceptPreflight(),
+             });
+           } catch (error) {
++            clientInput?.stop();
+             finishPrompt();
+             throw error;
+           }
++          const clientReceipt = clientInput
++            ? Promise.race([clientInput.linked, prompt.then(() => null)]).finally(() => clientInput.stop())
++            : undefined;
++          // A rejected preflight may finish before its receipt is awaited below.
++          void clientReceipt?.catch(() => {});
+ 
+           void prompt.then(() => {
+             // Compatibility fallback if a future SDK resolves without invoking
+@@ -962,7 +983,7 @@ export class AgentSessionWrapper {
+           });
+ 
+           await preflight;
+-          return null;
++          return clientReceipt ? await clientReceipt : null;
+         } finally {
+           releaseAdmission();
+         }
+@@ -988,6 +1009,23 @@ export class AgentSessionWrapper {
+           if (!this.isRunning()) this.forceShutdownOnIdle = false;
+         }
+ 
++      case "get_entries": {
++        const manager = this.inner.sessionManager;
++        let entries = manager.getEntries();
++        if (command.since !== undefined) {
++          const index = entries.findIndex((entry) => entry.id === command.since);
++          if (index === -1) throw new Error("Entry not found");
++          entries = entries.slice(index + 1);
++        }
++        return { entries, leafId: manager.getLeafId() };
++      }
++
++      case "get_messages":
++        return { messages: this.inner.sessionManager.buildSessionContext().messages };
++
++      case "get_available_models":
++        return { models: this.inner.modelRuntime.getAvailableSnapshot?.() ?? [] };
++
+       case "get_state": {
+         const model = this.inner.model;
+         const contextUsage = this.inner.getContextUsage();
+diff --git a/lib/shared-input.ts b/lib/shared-input.ts
+new file mode 100644
+index 0000000..95223cf
+--- /dev/null
++++ b/lib/shared-input.ts
+@@ -0,0 +1,39 @@
++import type { SessionManager } from "@earendil-works/pi-coding-agent";
++
++export function findClientMessageLink(manager: SessionManager, messageId: string) {
++  for (const entry of manager.getEntries()) {
++    if (entry.type !== "custom" || entry.customType !== "pi-web:client-message") continue;
++    const data = entry.data as { messageId?: unknown; entryId?: unknown } | undefined;
++    if (data?.messageId === messageId && typeof data.entryId === "string") {
++      return { messageId, entryId: data.entryId };
++    }
++  }
++  return undefined;
++}
++
++export function captureClientMessage(
++  manager: SessionManager,
++  subscribe: (listener: (event: { type: string; [key: string]: unknown }) => void) => () => void,
++  messageId: string,
++) {
++  let stop = () => {};
++  const linked = new Promise<{ messageId: string; entryId: string }>((resolve, reject) => {
++    stop = subscribe((event) => {
++      if (event.type !== "message_end" || !event.message || typeof event.message !== "object"
++        || !("role" in event.message) || event.message.role !== "user") return;
++      stop();
++      const message = event.message;
++      // Pi publishes message_end immediately before appending that same message object.
++      queueMicrotask(() => {
++        try {
++          const entry = manager.getEntries().findLast((entry) => entry.type === "message" && entry.message === message);
++          if (!entry) throw new Error("Shared input was not persisted");
++          const link = { messageId, entryId: entry.id };
++          manager.appendCustomEntry("pi-web:client-message", link);
++          resolve(link);
++        } catch (error) { reject(error); }
++      });
++    });
++  });
++  return { linked, stop: () => stop() };
++}
+diff --git a/lib/shared-session-page.ts b/lib/shared-session-page.ts
+new file mode 100644
+index 0000000..dca693f
+--- /dev/null
++++ b/lib/shared-session-page.ts
+@@ -0,0 +1,40 @@
++import type { SessionManager } from "@earendil-works/pi-coding-agent";
++import { getRpcSession } from "./rpc-manager";
++import { openSessionManager, resolveSessionPath } from "./session-reader";
++
++export async function readSharedSessionPage(id: string, after: string | null) {
++  const live = getRpcSession(id);
++  const filePath = live?.isAlive() ? live.sessionFile : await resolveSessionPath(id);
++  if (!filePath) return null;
++  const manager = live?.isAlive() ? live.inner.sessionManager : openSessionManager(filePath);
++  return sharedSessionPage(manager, filePath, after);
++}
++
++export function sharedSessionPage(manager: SessionManager, filePath: string, after: string | null) {
++  const all = manager.getBranch();
++  const cursor = after === null ? -1 : all.findIndex((entry) => entry.id === after);
++  const reset = after !== null && cursor === -1;
++  const start = cursor + 1;
++  const entries: typeof all = [];
++  let bytes = 0;
++  for (const entry of all.slice(start, start + 200)) {
++    const size = JSON.stringify(entry).length;
++    if (entries.length && bytes + size > 4 * 1024 * 1024) break;
++    entries.push(entry);
++    bytes += size;
++  }
++  const clientMessageIds: Record<string, string> = {};
++  for (const entry of manager.getEntries()) {
++    if (entry.type !== "custom" || entry.customType !== "pi-web:client-message") continue;
++    const data = entry.data as { entryId?: unknown; messageId?: unknown } | undefined;
++    if (typeof data?.entryId === "string" && typeof data.messageId === "string") {
++      clientMessageIds[data.entryId] = data.messageId;
++    }
++  }
++  return {
++    sessionId: manager.getSessionId(), filePath, cwd: manager.getCwd(),
++    leafId: manager.getLeafId(), entries, clientMessageIds, reset,
++    nextCursor: entries.at(-1)?.id ?? (reset ? null : after),
++    hasMore: start + entries.length < all.length,
++  };
++}
+diff --git a/lib/rpc-manager-shared-reads.test.mjs b/lib/rpc-manager-shared-reads.test.mjs
+new file mode 100755
+index 0000000..85b03d5
+--- /dev/null
++++ b/lib/rpc-manager-shared-reads.test.mjs
+@@ -0,0 +1,86 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { fauxProvider, fauxAssistantMessage } from "@earendil-works/pi-ai";
++import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
++import { createJiti } from "jiti";
++
++const jiti = createJiti(import.meta.url, { tsconfigPaths: true });
++const { AgentSessionWrapper } = await jiti.import("./rpc-manager.ts");
++
++test("shared clients read the complete native tree, active messages and model snapshot without prompting", async () => {
++  const root = await mkdtemp(join(tmpdir(), "pi-web-shared-reads-"));
++  let wrapper;
++  try {
++    const faux = fauxProvider({ models: [{ id: "shared-read-test" }] });
++    const modelRuntime = await ModelRuntime.create({authPath: join(root,"auth.json"), modelsPath:null, refreshOnCreate:false});
++    modelRuntime.registerNativeProvider(faux.provider);
++    const settingsManager=SettingsManager.inMemory();
++    const resourceLoader=new DefaultResourceLoader({cwd:root,agentDir:root,settingsManager,noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true});
++    await resourceLoader.reload();
++    const manager=SessionManager.inMemory(root);
++    const first=manager.appendMessage({role:'user',content:'first',timestamp:1});
++    manager.appendMessage({role:'user',content:'second',timestamp:2});
++    const {session}=await createAgentSession({cwd:root,agentDir:root,modelRuntime,model:faux.getModel('shared-read-test'),sessionManager:manager,settingsManager,resourceLoader});
++    wrapper=new AgentSessionWrapper(session);
++    wrapper.start();wrapper.beginExtensionBinding();await wrapper.waitUntilReady();
++    const before=manager.getEntries();
++    const all=await wrapper.send({type:'get_entries'});
++    assert.deepEqual(all.entries,before);
++    assert.equal(all.leafId,manager.getLeafId());
++    assert.deepEqual((await wrapper.send({type:'get_entries',since:first})).entries,before.slice(1));
++    await assert.rejects(wrapper.send({type:'get_entries',since:'unknown'}),/Entry not found/);
++    assert.deepEqual((await wrapper.send({type:'get_messages'})).messages,manager.buildSessionContext().messages);
++    assert.ok(Array.isArray((await wrapper.send({type:'get_available_models'})).models));
++    assert.deepEqual(manager.getEntries(),before);
++    let releaseResponse;
++    faux.setResponses([() => new Promise(resolve => { releaseResponse = () => resolve(fauxAssistantMessage('shared answer')); })]);
++    const receipt = await wrapper.send({type:'prompt',message:'from T3',clientMessageId:'t3-input-1'});
++    assert.equal(receipt.messageId, 't3-input-1');
++    const persisted = manager.getEntries().find(entry => entry.id === receipt.entryId);
++    assert.equal(persisted.type, 'message');
++    assert.equal(persisted.message.role, 'user');
++    assert.deepEqual(await wrapper.send({type:'prompt',message:'from T3',clientMessageId:'t3-input-1'}), receipt);
++    await assert.rejects(wrapper.send({type:'prompt',message:'another',clientMessageId:'t3-input-2'}), /busy/);
++    const settled = new Promise(resolve => { const off = wrapper.onEvent(event => { if(event.type === 'agent_settled') {off(); resolve();} }); });
++    while (!releaseResponse) await new Promise(resolve => setImmediate(resolve));
++    releaseResponse();
++    await settled;
++    assert.equal(manager.getEntries().filter(entry => entry.type === 'custom' && entry.customType === 'pi-web:client-message').length, 1);
++    assert.equal(faux.state.callCount, 1);
++  } finally {
++    if(wrapper) await wrapper.destroy();
++    await rm(root,{recursive:true,force:true});
++  }
++});
++
++const { sharedSessionPage } = await jiti.import("./shared-session-page.ts");
++test("snapshot pages cover all history, preserve input links and reset after a branch switch", () => {
++  const manager = SessionManager.inMemory('/shared-project');
++  const nativeIds = [];
++  for(let i=0; i<450; i++) nativeIds.push(manager.appendMessage({role:'user',content:`message ${i}`,timestamp:i}));
++  manager.appendCustomEntry('pi-web:client-message', {entryId:nativeIds[0],messageId:'t3-first'});
++  const before = manager.getEntries();
++  const collected = [];
++  let cursor = null;
++  let pages = 0;
++  do {
++    const page = sharedSessionPage(manager, '/shared.jsonl', cursor);
++    collected.push(...page.entries.map(entry => entry.id));
++    assert.equal(page.clientMessageIds[nativeIds[0]], 't3-first');
++    cursor = page.nextCursor;
++    pages++;
++    if(!page.hasMore) break;
++  } while(pages<10);
++  assert.equal(pages,3);
++  assert.deepEqual(collected, before.map(entry=>entry.id));
++  assert.equal(sharedSessionPage(manager, '/shared.jsonl', cursor).entries.length,0);
++  manager.branch(nativeIds[20]);
++  const reset = sharedSessionPage(manager, '/shared.jsonl', cursor);
++  assert.equal(reset.reset,true);
++  assert.equal(reset.entries.at(-1).id,nativeIds[20]);
++  assert.equal(reset.clientMessageIds[nativeIds[0]],'t3-first');
++  assert.deepEqual(manager.getEntries(),before);
++});
+diff --git a/app/api/sessions/[id]/entries/route.ts b/app/api/sessions/[id]/entries/route.ts
+new file mode 100644
+index 0000000..2b4b039
+--- /dev/null
++++ b/app/api/sessions/[id]/entries/route.ts
+@@ -0,0 +1,12 @@
++import { NextResponse } from "next/server";
++import { readSharedSessionPage } from "@/lib/shared-session-page";
++
++export const dynamic = "force-dynamic";
++
++export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
++  const { id } = await params;
++  const result = await readSharedSessionPage(id, new URL(req.url).searchParams.get("after"));
++  return result
++    ? NextResponse.json(result, { headers: { "Cache-Control": "no-store" } })
++    : NextResponse.json({ error: "Session not found" }, { status: 404 });
++}

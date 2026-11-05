@@ -1,0 +1,7 @@
+{
+  "node": "C:/Program Files/nodejs/node.exe",
+  "binary": "C:/REPLACE_WITH_YOUR_CODEX_CLI/codex.exe",
+  "app": "C:/REPLACE_WITH_YOUR_CODEX_APP/ChatGPT.exe",
+  "home": "C:/Users/YOUR_USER/.codex",
+  "url": "ws://127.0.0.1:39951"
+}
