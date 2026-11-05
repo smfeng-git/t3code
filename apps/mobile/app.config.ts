@@ -115,7 +115,15 @@ function resolveAppVariant(value: string | undefined): AppVariant {
   }
 }
 
-const variant = VARIANT_CONFIG[APP_VARIANT];
+const variant =
+  repoEnv.T3CODE_FORK_BUILD === "1"
+    ? {
+        ...VARIANT_CONFIG[APP_VARIANT],
+        appName: "T3 Shared",
+        scheme: "t3-shared",
+        androidPackage: "com.smfeng.t3shared",
+      }
+    : VARIANT_CONFIG[APP_VARIANT];
 // Copied thread links open the app. app.t3.codes/.well-known lists every variant's identifiers.
 const HOSTED_APP_HOST = "app.t3.codes";
 const iosBundleIdentifier = isIosPersonalTeamBuild

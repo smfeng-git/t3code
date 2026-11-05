@@ -1,0 +1,139 @@
+name: Custom Windows and Android installers
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/pi-session-sync]
+    paths: [.github/workflows/custom-installers.yml]
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_VERSION: 0.1.7-preview.20261105.1
+  T3CODE_MOBILE_UPDATES_ENABLED: "0"
+
+jobs:
+  linux-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+      - uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=t3... --filter=@t3tools/scripts...
+      - uses: dtolnay/rust-toolchain@stable
+      - run: vp run --filter t3 build
+      - run: vp run --filter t3 build:exe
+      - run: |
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml
+          mkdir -p apps/server/dist/resource-monitor/linux-x64
+          cp native/resource-monitor/target/release/t3-resource-monitor apps/server/dist/resource-monitor/linux-x64/
+          node scripts/build-cli-archive.ts --platform linux --arch x64 --version "$RELEASE_VERSION" --output-dir release-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: custom-wsl-runtime
+          path: release-cli/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    needs: linux-runtime
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/desktop... --filter=t3... --filter=@t3tools/scripts...
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: custom-wsl-runtime
+          path: release-cli
+      - name: Build unsigned Windows installer with custom WSL backend
+        shell: pwsh
+        run: |
+          $runtimeArchive = (Get-ChildItem release-cli/*.tar.gz | Select-Object -First 1).FullName
+          node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64 --build-version $env:RELEASE_VERSION --wsl-runtime $runtimeArchive --output-dir release-custom
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: custom-windows
+          path: release-custom/*.exe
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      APP_VARIANT: preview
+      T3CODE_FORK_BUILD: "1"
+      T3CODE_MOBILE_VERSION: "2.2.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+      - name: Generate standalone Android project
+        working-directory: apps/mobile
+        run: vp exec expo prebuild --platform android --no-install
+      - name: Build embedded JS release APK
+        working-directory: apps/mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon --max-workers=2
+      - name: Sign and verify APK
+        env:
+          SIGNING_KEY: ${{ secrets.CUSTOM_ANDROID_KEYSTORE }}
+          SIGNING_PASSWORD: ${{ secrets.CUSTOM_ANDROID_PASSWORD }}
+        run: |
+          test -n "$SIGNING_KEY"
+          printf '%s' "$SIGNING_KEY" | base64 --decode > "$RUNNER_TEMP/custom.p12"
+          tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          mkdir -p release-custom
+          apk=$(find apps/mobile/android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          test -n "$apk"
+          "$tools/zipalign" -P 16 -f 4 "$apk" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/custom.p12" --ks-key-alias t3shared --ks-pass env:SIGNING_PASSWORD --key-pass env:SIGNING_PASSWORD --out release-custom/T3-Shared-Android-arm64.apk "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify --verbose release-custom/T3-Shared-Android-arm64.apk
+          "$tools/aapt" dump badging release-custom/T3-Shared-Android-arm64.apk | head -5
+          unzip -l release-custom/T3-Shared-Android-arm64.apk | grep 'assets/index.android.bundle'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: custom-android
+          path: release-custom/*.apk
+          if-no-files-found: error
+
+  draft-release:
+    needs: [windows, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: custom-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create reviewable prerelease draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release-assets
+          sha256sum *.exe *.apk *.tar.gz > SHA256SUMS.txt
+          gh release create "shared-$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease --title "T3 Shared $RELEASE_VERSION" --notes-file ../extras/shared-sessions/RELEASE-NOTES.md ./*.exe ./*.apk ./*.tar.gz SHA256SUMS.txt
