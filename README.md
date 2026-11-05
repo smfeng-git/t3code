@@ -2,7 +2,7 @@
 
 > **定制分支 `feat/pi-session-sync`**：包含 Pi Web 共享会话、Codex 历史跟随及共享后端接入、侧栏环境筛选与项目分组。
 > 使用自己的账号和环境，请先阅读 [独立环境接入说明](extras/shared-sessions/README.md)。直接克隆此分支，无需重复应用补丁。
-> [Windows / Android 定制预览安装包](https://github.com/smfeng-git/t3code/releases/tag/shared-0.1.7-preview.20261105.1)。下方上游官方安装链接不包含这些定制修改。
+> 预览安装包已撤下，当前仅分享源码与接入工具；远程接入完整流程尚未验收。下方上游官方安装链接不包含这些定制修改。
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 
