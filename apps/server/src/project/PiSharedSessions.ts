@@ -80,6 +80,9 @@ const make = Effect.gen(function* () {
   const fetch = yield* FetchHttpClient.Fetch;
   const secrets = yield* SecretResolver.SecretResolver;
   const cursorFile = path.join(config.stateDir, "pi-shared-cursors.json");
+  const discoveryFile = path.join(config.stateDir, "pi-shared-discovered.json");
+  const discoverySchema = Schema.fromJsonString(Schema.Array(Schema.String));
+  let discovered = new Set<string>();
   let cursors: typeof CursorState.Type = {};
   let loaded = false;
 
@@ -88,6 +91,7 @@ const make = Effect.gen(function* () {
     instanceId: ProviderInstanceId,
     session: (typeof SharedCatalog.Type.sessions)[number],
     active: boolean,
+    initialCatalog: boolean,
   ) {
     const key = `${instanceId}:${session.id}`;
     const checkpoint = cursors[key];
@@ -154,9 +158,9 @@ const make = Effect.gen(function* () {
         createdAt,
         updatedAt,
         archivedAt: null,
-        settledOverride: "settled",
-        settledAt: updatedAt,
-        unsettledAt: null,
+        settledOverride: initialCatalog ? "settled" : "active",
+        settledAt: initialCatalog ? updatedAt : null,
+        unsettledAt: initialCatalog ? null : updatedAt,
         snoozedUntil: null,
         snoozedAt: null,
         pinnedAt: null,
@@ -324,7 +328,34 @@ const make = Effect.gen(function* () {
           { discard: true },
         ),
       );
-      if (freshEvents.length) yield* sink.write({ events: freshEvents });
+      const activityEvents: OrchestrationV2DomainEvent[] = [];
+      if (
+        checkpoint?.migrated &&
+        freshEvents.some(
+          (event) => event.type === "message.updated" && event.payload.role === "user",
+        )
+      ) {
+        const thread = yield* projections.getThread(threadId);
+        const hasNewInput = freshEvents.some(
+          (event) =>
+            event.type === "message.updated" &&
+            event.payload.role === "user" &&
+            (thread.settledAt === null ||
+              DateTime.toEpochMillis(event.payload.createdAt) >
+                DateTime.toEpochMillis(thread.settledAt)),
+        );
+        if (thread.settledOverride === "settled" && hasNewInput) {
+          const at = DateTime.makeUnsafe(session.modified);
+          activityEvents.push({
+            id: yield* ids.allocate.event({ threadId }),
+            type: "thread.unsettled",
+            threadId,
+            occurredAt: at,
+            payload: { ...thread, settledOverride: "active", settledAt: null, unsettledAt: at },
+          });
+        }
+      }
+      if (freshEvents.length) yield* sink.write({ events: [...freshEvents, ...activityEvents] });
       cursor = page.nextCursor;
       // Commit the cursor only after all page events; stable native IDs make replay idempotent.
       Object.assign(cursors, {
@@ -385,6 +416,13 @@ const make = Effect.gen(function* () {
     if (!loaded) {
       if (yield* fs.exists(cursorFile))
         cursors = yield* fs.readFileString(cursorFile).pipe(Effect.flatMap(decodeCursors));
+      if (yield* fs.exists(discoveryFile)) {
+        discovered = new Set(
+          yield* fs
+            .readFileString(discoveryFile)
+            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(discoverySchema))),
+        );
+      }
       loaded = true;
     }
     const current = yield* settings.getSettings;
@@ -414,17 +452,30 @@ const make = Effect.gen(function* () {
         const active = new Set(
           Array.isArray(running.runningSessionIds) ? running.runningSessionIds : [],
         );
+        const initialCatalog =
+          !discovered.has(key) &&
+          !Object.keys(cursors).some((cursorKey) => cursorKey.startsWith(`${key}:`));
         for (const session of catalog.sessions)
           yield* syncSession(
             client,
             ProviderInstanceId.make(key),
             session,
             active.has(session.id),
+            initialCatalog,
           ).pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Pi shared session sync failed", { sessionId: session.id, cause }),
             ),
           );
+        if (!discovered.has(key)) {
+          discovered.add(key);
+          yield* fs.makeDirectory(config.stateDir, { recursive: true });
+          yield* fs.writeFileString(
+            `${discoveryFile}.tmp`,
+            yield* Schema.encodeEffect(discoverySchema)([...discovered]),
+          );
+          yield* fs.rename(`${discoveryFile}.tmp`, discoveryFile);
+        }
       }).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("Pi shared backend sync failed", { instanceId: key, cause }),

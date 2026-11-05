@@ -6,6 +6,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import {
+  scopeSidebarProjectsToEnvironment,
   shouldCreateNewThreadInCurrentProject,
   deleteSelectedThreadEntries,
   getFallbackThreadIdAfterDelete,
@@ -37,6 +38,19 @@ import {
   resolveSidebarFolderDot,
   sidebarFolderExpansionKeys,
 } from "./Sidebar.logic";
+
+it("intersects environment and project filters without widening an empty scope", () => {
+  const projects = [
+    { environmentId: "win", id: "same" },
+    { environmentId: "wsl", id: "same" },
+  ];
+  expect([...scopeSidebarProjectsToEnvironment(projects, null, "wsl")!]).toEqual(["wsl:same"]);
+  expect([...scopeSidebarProjectsToEnvironment(projects, new Set(["win:same"]), "wsl")!]).toEqual(
+    [],
+  );
+  expect([...scopeSidebarProjectsToEnvironment(projects, null, "disconnected")!]).toEqual([]);
+  expect(scopeSidebarProjectsToEnvironment(projects, null, "")).toBeNull();
+});
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   sortActiveThreadsByOrderKey,

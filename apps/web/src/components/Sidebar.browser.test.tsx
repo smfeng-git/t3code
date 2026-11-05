@@ -1,17 +1,19 @@
 import { DEFAULT_CLIENT_SETTINGS, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../test/render";
 import { openCommandPalette } from "../commandPaletteBus";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { useProjects } from "../state/entities";
+import { useEnvironmentIdentities } from "../state/environments";
 import type { Project } from "../types";
 import Sidebar from "./Sidebar";
 import { SidebarProvider } from "./ui/sidebar";
 
 vi.mock("../state/entities", { spy: true });
+vi.mock("../state/environments", { spy: true });
 vi.mock("../hooks/useHandleNewThread", { spy: true });
 vi.mock("../commandPaletteBus", () => ({
   openCommandPalette: vi.fn(),
@@ -86,4 +88,52 @@ describe("sidebar header new thread", () => {
       expect(startThread).toHaveBeenCalledExactlyOnceWith(currentProjectRef);
     }
   });
+});
+
+it("remembers the environment filter and limits the project picker to that environment", async () => {
+  using stack = new DisposableStack();
+  const identities = [
+    { environmentId: EnvironmentId.make("local"), label: "Windows" },
+    { environmentId: EnvironmentId.make("wsl"), label: "WSL Ubuntu" },
+  ];
+  vi.mocked(useEnvironmentIdentities).mockReturnValue(identities);
+  stack.defer(() => vi.mocked(useEnvironmentIdentities).mockReset());
+  vi.mocked(useProjects).mockReturnValue([
+    project("win-project"),
+    { ...project("pi-project"), environmentId: EnvironmentId.make("wsl") },
+  ]);
+  vi.mocked(useHandleNewThread).mockReturnValue({
+    activeDraftThread: null,
+    activeThread: null,
+    defaultProjectRef: null,
+    handleNewThread: vi.fn().mockResolvedValue(null),
+    routeDraftId: null,
+    routeThreadRef: null,
+  });
+  localStorage.removeItem("sidebar.environment-scope");
+  stack.defer(() => localStorage.removeItem("sidebar.environment-scope"));
+  const ui = () => (
+    <SidebarProvider>
+      <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+    </SidebarProvider>
+  );
+  {
+    await using screen = await render(ui());
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "Filter threads by environment" }),
+      "wsl",
+    );
+    await userEvent.click(
+      screen.getByRole("combobox", { name: "Filter threads by project", exact: true }),
+    );
+    await expect.element(page.getByRole("option", { name: /^pi-project/ })).toBeVisible();
+    await expect
+      .element(page.getByRole("option", { name: /^win-project/ }))
+      .not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+  }
+  await using screen = await render(ui());
+  await expect
+    .element(screen.getByRole("combobox", { name: "Filter threads by environment" }))
+    .toHaveValue("wsl");
 });

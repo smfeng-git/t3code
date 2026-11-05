@@ -1369,3 +1369,19 @@ export function sortScopedProjectsForSidebar<
       left.id.localeCompare(right.id),
   );
 }
+export function scopeSidebarProjectsToEnvironment(
+  projects: readonly { environmentId: string; id: string }[],
+  projectKeys: ReadonlySet<string> | null,
+  environmentId: string,
+): ReadonlySet<string> | null {
+  if (!environmentId) return projectKeys;
+  return new Set(
+    projects
+      .filter(
+        (project) =>
+          project.environmentId === environmentId &&
+          (projectKeys === null || projectKeys.has(`${project.environmentId}:${project.id}`)),
+      )
+      .map((project) => `${project.environmentId}:${project.id}`),
+  );
+}

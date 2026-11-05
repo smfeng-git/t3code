@@ -151,6 +151,7 @@ it.effect(
       const projection = yield* ProjectionStore.ProjectionStoreV2;
       const firstId = ThreadId.make("import:pi:one");
       expect((yield* projection.getThreadRecords(firstId, ["messages"])).messages).toHaveLength(1);
+      expect((yield* projection.getThread(firstId)).settledOverride).toBe("settled");
       records.get("one")!.push(native("one-a", "new answer", "assistant"));
       sessions[0]!.modified = "2026-11-04T10:01:00.000Z";
       yield* sync.syncOnce();
@@ -158,6 +159,7 @@ it.effect(
       sessions[0]!.name = "renamed fork";
       yield* sync.syncOnce();
       expect((yield* projection.getThread(firstId)).title).toBe("renamed fork");
+      expect((yield* projection.getThread(firstId)).settledOverride).toBe("settled");
       expect((yield* projection.getThreadRecords(firstId, ["messages"])).messages).toHaveLength(2);
       sessions[0]!.name = "one";
       yield* sync.syncOnce();
@@ -190,5 +192,14 @@ it.effect(
         (yield* projection.getThreadRecords(ThreadId.make("import:pi:three"), ["messages"]))
           .messages,
       ).toHaveLength(1);
+      expect((yield* projection.getThread(ThreadId.make("import:pi:three"))).settledOverride).toBe(
+        "active",
+      );
+      records
+        .get("one")!
+        .push({ ...native("one-new-user", "continue"), timestamp: "2026-11-05T10:00:00.000Z" });
+      sessions[0]!.modified = "2026-11-05T10:00:00.000Z";
+      yield* replay.syncOnce();
+      expect((yield* projection.getThread(firstId)).settledOverride).toBe("active");
     }).pipe(Effect.provide(Layer.provideMerge(persistence, NodeServices.layer)), Effect.scoped),
 );

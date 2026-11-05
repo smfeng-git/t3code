@@ -133,7 +133,11 @@ import { useTerminalFocus } from "../hooks/useTerminalFocus";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import { useBoringSidebarEnabled, useClientSettings } from "../hooks/useSettings";
+import {
+  useBoringSidebarEnabled,
+  useClientSettings,
+  updateClientSettings,
+} from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -180,6 +184,7 @@ import {
 import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
+  scopeSidebarProjectsToEnvironment,
   groupSidebarThreadsByProject,
   sidebarFolderExpansionKeys,
   buildBulkTitleRegenerationContextMenuItem,
@@ -253,7 +258,7 @@ import {
 } from "./ui/combobox";
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
-import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
+import { SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
 import { TooltipProvider } from "./ui/tooltip";
 import { composerDraftHasUserContent, DraftId, useComposerDraftStore } from "../composerDraftStore";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
@@ -1007,6 +1012,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     },
   });
   const boringSidebarEnabled = useBoringSidebarEnabled();
+  const [environmentScope, setEnvironmentScope] = useLocalStorage(
+    "sidebar.environment-scope",
+    "",
+    Schema.String,
+  );
   const legacySidebarEnabled = useClientSettings((settings) => settings.legacySidebarEnabled);
   const folderRowsMultiline = useClientSettings((settings) => settings.boringSidebarMultilineRows);
   const newThreadContext = useHandleNewThread();
@@ -1094,7 +1104,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // A scope whose project is gone reads as all projects once every snapshot has
   // loaded. The stored keys are left alone, so the scope returns with its project.
   // An archived project's scope reads as all projects, matching the menu.
-  const scopeGroups = pickableProjectGroups(projectGroups);
+  const environmentProjectGroups = projectGroups.filter(
+    (group) =>
+      !environmentScope ||
+      group.memberProjectRefs.some((ref) => ref.environmentId === environmentScope),
+  );
+  const scopeGroups = pickableProjectGroups(environmentProjectGroups);
   const archivedProjectKeys = new Set(
     projectGroups.filter((project) => project.archived).map((project) => project.projectKey),
   );
@@ -1146,7 +1161,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
   });
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
-  const projectScopeKey = projectScopeKeys.length === 0 ? null : projectScopeKeys.join("\n");
+  const projectScopeKey =
+    !environmentScope && projectScopeKeys.length === 0
+      ? null
+      : JSON.stringify([environmentScope, ...projectScopeKeys]);
   const toggleProjectScopeKey = (key: string) =>
     setProjectScopeKeys(
       projectScopeKeys.includes(key)
@@ -1180,7 +1198,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   // Pinning from a row keeps rows in place while the menu is open.
   const projectScopeItems = useOrderWhileOpen(
-    lookupProjectScopeItems,
+    lookupProjectScopeItems.filter(
+      (item) =>
+        item.value === "all" || scopeGroups.some((group) => group.projectKey === item.value),
+    ),
     (item) => item.value,
     projectScopeMenuState.open,
   );
@@ -1197,9 +1218,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   });
   const scopedProjectGroups = revealWidensScope ? [] : chosenProjectGroups;
   const scopedProjectRefs = scopedProjectGroups.flatMap((project) => project.memberProjectRefs);
-  const scopedProjectKeys = revealWidensScope ? null : chosenScopeProjectKeys;
+  const scopedProjectKeys = scopeSidebarProjectsToEnvironment(
+    projects,
+    revealWidensScope ? null : chosenScopeProjectKeys,
+    environmentScope,
+  );
   const threadSearch = useThreadSearch(
-    connectedEnvironmentIds,
+    connectedEnvironmentIds.filter((id) => !environmentScope || id === environmentScope),
     threadSearchQuery,
     scopedProjectGroups.length === 0
       ? {}
@@ -1355,7 +1380,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     folderGroups: boringSidebarEnabled
       ? scopedProjectGroups.length === 0
         ? // An archived project keeps a folder for its active threads, below the rest.
-          [...scopeGroups, ...projectGroups.filter((project) => project.archived)]
+          [...scopeGroups, ...environmentProjectGroups.filter((project) => project.archived)]
         : scopedProjectGroups
       : null,
     keepEmptyFolders: (group) =>
@@ -2992,6 +3017,49 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         fixedHeader={
           <SidebarGroup className="z-[1]">
             <SidebarThreadHeader
+              environmentScope={
+                <select
+                  aria-label="Filter threads by environment"
+                  className="h-7 min-w-0 flex-1 rounded-md border border-sidebar-border bg-sidebar px-2 text-xs text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                  value={environmentScope}
+                  onChange={(event) => {
+                    setEnvironmentScope(event.target.value);
+                    setProjectScopeKeys([]);
+                    clearSelection();
+                  }}
+                >
+                  <option value="">All environments</option>
+                  {[...environmentLabelById].map(([id, label]) => (
+                    <option key={id} value={id}>
+                      {label}
+                    </option>
+                  ))}
+                  {environmentScope &&
+                  !environmentLabelById.has(environmentScope as EnvironmentId) ? (
+                    <option value={environmentScope}>Unavailable environment</option>
+                  ) : null}
+                </select>
+              }
+              groupControl={
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  aria-pressed={boringSidebarEnabled}
+                  onClick={() => {
+                    void updateClientSettings({
+                      boringSidebarEnabled: !boringSidebarEnabled,
+                      legacySidebarEnabled: false,
+                    }).catch(() => {
+                      toastManager.add({
+                        type: "error",
+                        title: "Could not change sidebar grouping",
+                      });
+                    });
+                  }}
+                >
+                  {boringSidebarEnabled ? "Grouped by project" : "Group by project"}
+                </Button>
+              }
               hasProjects={projectGroups.length > 0}
               projectScope={
                 <Combobox
@@ -3032,8 +3100,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 >
                   <ComboboxTrigger
                     render={
-                      <SidebarHeaderIconButton
-                        label={
+                      <Button
+                        size="compact"
+                        variant="outline"
+                        className="min-w-0 flex-1"
+                        aria-label={
                           scopedProjectGroups.length > 0
                             ? `Filter threads by project: ${scopedProjectGroups.map((project) => project.displayName).join(", ")}`
                             : "Filter threads by project"
@@ -3058,6 +3129,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     ) : (
                       <ListFilterIcon className="size-4" />
                     )}
+                    <span className="truncate">
+                      {scopedProjectGroups.length > 1
+                        ? `${scopedProjectGroups.length} projects`
+                        : (scopedProjectGroups[0]?.displayName ?? "All projects")}
+                    </span>
                   </ComboboxTrigger>
                   {/* Refocusing the trigger after a pointer close shows its focus ring and opens its tooltip. */}
                   <ComboboxPopup
