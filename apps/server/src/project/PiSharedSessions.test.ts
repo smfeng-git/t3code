@@ -155,6 +155,13 @@ it.effect(
       sessions[0]!.modified = "2026-11-04T10:01:00.000Z";
       yield* sync.syncOnce();
       expect((yield* projection.getThreadRecords(firstId, ["messages"])).messages).toHaveLength(2);
+      sessions[0]!.name = "renamed fork";
+      yield* sync.syncOnce();
+      expect((yield* projection.getThread(firstId)).title).toBe("renamed fork");
+      expect((yield* projection.getThreadRecords(firstId, ["messages"])).messages).toHaveLength(2);
+      sessions[0]!.name = "one";
+      yield* sync.syncOnce();
+      expect((yield* projection.getThread(firstId)).title).toBe("one");
       const restarted = Context.get(yield* makeSync(), PiSharedSessions.PiSharedSessions);
       yield* restarted.syncOnce();
       expect((yield* projection.getThreadRecords(firstId, ["messages"])).messages).toHaveLength(2);

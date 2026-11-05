@@ -50,6 +50,7 @@ const CursorState = Schema.Record(
   Schema.Struct({
     cursor: Schema.NullOr(Schema.String),
     modified: Schema.String,
+    title: Schema.optionalKey(Schema.String),
     migrated: Schema.optionalKey(Schema.Boolean),
     legacyRun: Schema.optionalKey(Schema.NullOr(Schema.String)),
     legacyEntryIds: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -90,7 +91,8 @@ const make = Effect.gen(function* () {
   ) {
     const key = `${instanceId}:${session.id}`;
     const checkpoint = cursors[key];
-    if (checkpoint?.modified === session.modified && !active) return;
+    const title = (session.name || session.firstMessage || "Pi session").slice(0, 200);
+    if (checkpoint?.modified === session.modified && checkpoint.title === title && !active) return;
     const owners = yield* sql<{ thread_id: string }>`SELECT thread_id
       FROM orchestration_v2_projection_provider_threads
       WHERE driver = 'pi' AND provider_instance_id = ${instanceId}
@@ -98,6 +100,19 @@ const make = Effect.gen(function* () {
     const threadId = ThreadId.make(owners[0]?.thread_id ?? `import:${instanceId}:${session.id}`);
     const existing = yield* Effect.option(projections.getThread(threadId));
     if (Option.isSome(existing) && existing.value.deletedAt !== null) return;
+    if (Option.isSome(existing) && checkpoint?.title !== title && existing.value.title !== title) {
+      yield* sink.write({
+        events: [
+          {
+            id: yield* ids.allocate.event({ threadId }),
+            type: "thread.metadata-updated",
+            threadId,
+            occurredAt: DateTime.nowUnsafe(),
+            payload: { ...existing.value, title },
+          },
+        ],
+      });
+    }
     if (Option.isNone(existing)) {
       const found = yield* projects.getByWorkspaceRoot(session.cwd, {
         allowMissingWorkspaceRoot: true,
@@ -123,7 +138,7 @@ const make = Effect.gen(function* () {
         creationSource: "server",
         id: threadId,
         projectId: project.id,
-        title: (session.name || session.firstMessage || "Pi session").slice(0, 200),
+        title,
         providerInstanceId: instanceId,
         modelSelection: { instanceId, model: DEFAULT_MODEL_BY_PROVIDER[PI_DRIVER] ?? "default" },
         runtimeMode: "full-access",
@@ -316,6 +331,7 @@ const make = Effect.gen(function* () {
         [key]: {
           cursor,
           modified: page.hasMore ? "" : session.modified,
+          title,
           migrated: !page.hasMore,
           legacyRun,
           legacyEntryIds: [...legacyEntryIds],
