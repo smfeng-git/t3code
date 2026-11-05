@@ -2,9 +2,11 @@ name: Custom Windows and Android installers
 
 on:
   workflow_dispatch:
-  push:
-    branches: [feat/pi-session-sync]
-    paths: [.github/workflows/custom-installers.yml]
+    inputs:
+      android_run_id:
+        description: "Optional successful Android artifact run to reuse when only desktop packaging changed"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -31,6 +33,7 @@ jobs:
         with:
           install-args: --filter=t3... --filter=@t3tools/scripts...
       - uses: dtolnay/rust-toolchain@stable
+      - run: node scripts/update-release-package-versions.ts "$RELEASE_VERSION"
       - run: vp run --filter t3 build
       - run: vp run --filter t3 build:exe
       - run: |
@@ -38,6 +41,9 @@ jobs:
           mkdir -p apps/server/dist/resource-monitor/linux-x64
           cp native/resource-monitor/target/release/t3-resource-monitor apps/server/dist/resource-monitor/linux-x64/
           node scripts/build-cli-archive.ts --platform linux --arch x64 --version "$RELEASE_VERSION" --output-dir release-cli
+          mkdir -p "$RUNNER_TEMP/cli-smoke"
+          tar -xzf "release-cli/t3-$RELEASE_VERSION-linux-x64.tar.gz" -C "$RUNNER_TEMP/cli-smoke"
+          "$RUNNER_TEMP/cli-smoke/t3-$RELEASE_VERSION-linux-x64/t3" --version | grep -F "$RELEASE_VERSION"
       - uses: actions/upload-artifact@v4
         with:
           name: custom-wsl-runtime
@@ -78,6 +84,7 @@ jobs:
           if-no-files-found: error
 
   android:
+    if: inputs.android_run_id == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -137,9 +144,11 @@ jobs:
 
   draft-release:
     needs: [windows, android]
+    if: always() && needs.windows.result == 'success' && (needs.android.result == 'success' || (needs.android.result == 'skipped' && inputs.android_run_id != ''))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      actions: read
     steps:
       - name: Checkout without vendored reference submodules
         shell: bash
@@ -154,10 +163,24 @@ jobs:
           pattern: custom-*
           path: release-assets
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        if: inputs.android_run_id != ''
+        with:
+          name: custom-android
+          run-id: ${{ inputs.android_run_id }}
+          github-token: ${{ github.token }}
+          path: release-assets
       - name: Create reviewable prerelease draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd release-assets
           sha256sum *.exe *.apk *.tar.gz > SHA256SUMS.txt
-          gh release create "shared-$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease --title "T3 Shared $RELEASE_VERSION" --notes-file ../extras/shared-sessions/RELEASE-NOTES.md ./*.exe ./*.apk ./*.tar.gz SHA256SUMS.txt
+          tag="shared-$RELEASE_VERSION"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --notes-file ../extras/shared-sessions/RELEASE-NOTES.md
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber ./*.exe ./*.apk ./*.tar.gz SHA256SUMS.txt
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease --title "T3 Shared $RELEASE_VERSION" --notes-file ../extras/shared-sessions/RELEASE-NOTES.md ./*.exe ./*.apk ./*.tar.gz SHA256SUMS.txt
+          fi
