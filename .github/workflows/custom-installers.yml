@@ -88,7 +88,9 @@ jobs:
           install-args: --filter=@t3tools/mobile... --filter=@t3tools/scripts...
       - name: Generate standalone Android project
         working-directory: apps/mobile
-        run: vp exec expo prebuild --platform android --no-install
+        run: |
+          vp test run --project unit app.config.test.ts
+          vp exec expo prebuild --platform android --no-install
       - name: Build embedded JS release APK
         working-directory: apps/mobile/android
         run: |

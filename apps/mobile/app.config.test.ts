@@ -6,7 +6,11 @@ import assetLinks from "../web/public/.well-known/assetlinks.json";
 
 // Keep config parsing independent of local env files and build credentials.
 vi.mock("../../scripts/lib/public-config.ts", () => ({
-  loadRepoEnv: () => ({ APP_VARIANT: process.env.APP_VARIANT }),
+  loadRepoEnv: () => ({
+    APP_VARIANT: process.env.APP_VARIANT,
+    T3CODE_FORK_BUILD: process.env.T3CODE_FORK_BUILD,
+    T3CODE_MOBILE_UPDATES_ENABLED: process.env.T3CODE_MOBILE_UPDATES_ENABLED,
+  }),
 }));
 
 afterEach(() => {
@@ -18,6 +22,16 @@ async function loadConfig(variant: string | undefined) {
   vi.stubEnv("APP_VARIANT", variant);
   return (await import("./app.config.ts")).default;
 }
+
+it("isolates the fork Android identity and disables upstream OTA for release builds", async () => {
+  vi.stubEnv("T3CODE_FORK_BUILD", "1");
+  vi.stubEnv("T3CODE_MOBILE_UPDATES_ENABLED", "0");
+  const config = await loadConfig("preview");
+  expect(config.name).toBe("T3 Shared");
+  expect(config.android?.package).toBe("com.smfeng.t3shared");
+  expect(config.scheme).toBe("t3-shared");
+  expect(config.updates?.enabled).toBe(false);
+});
 
 it.each(["prod", ""])("rejects APP_VARIANT=%j before selecting production IDs", async (value) => {
   await expect(loadConfig(value)).rejects.toThrow(
