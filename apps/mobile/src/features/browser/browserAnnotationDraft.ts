@@ -1,6 +1,7 @@
 import { ComposerContextId, type PreviewElementSelection } from "@t3tools/contracts";
 import { formatComposerContextReference } from "@t3tools/shared/composerContextReferences";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
+import { estimateBase64ByteSize } from "../../lib/base64";
 
 export function browserAnnotationDraft(
   selection: PreviewElementSelection,
@@ -15,7 +16,7 @@ export function browserAnnotationDraft(
     type: "image",
     name: "browser-annotation.jpg",
     mimeType: "image/jpeg",
-    sizeBytes: Math.floor(((selection.screenshot.split(",")[1]?.length ?? 0) * 3) / 4),
+    sizeBytes: estimateBase64ByteSize(selection.screenshot.split(",")[1] ?? ""),
     dataUrl: selection.screenshot,
     previewUri: selection.screenshot,
   };

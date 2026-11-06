@@ -1803,6 +1803,12 @@ describe("PreviewManager", () => {
         fromId.mockReturnValue(contents);
         const manager = yield* PreviewManager.PreviewManager;
         const capturing = yield* Queue.unbounded<boolean>();
+        const setBackgroundThrottling = vi.fn();
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          once: vi.fn(),
+          webContents: Object.assign(contents.hostWebContents!, { setBackgroundThrottling }),
+        } as never);
         yield* manager.subscribeStateChanges((_tabId, state) =>
           Queue.offer(capturing, state.capturing).pipe(Effect.asVoid),
         );
@@ -1834,8 +1840,10 @@ describe("PreviewManager", () => {
           }),
         );
         expect(yield* Queue.take(capturing)).toBe(true);
+        expect(setBackgroundThrottling).toHaveBeenLastCalledWith(false);
         screenshot.resolve({ data: "" });
         expect(yield* Queue.take(capturing)).toBe(false);
+        expect(setBackgroundThrottling).toHaveBeenLastCalledWith(true);
       }).pipe(Effect.provide(managerLayer()), Effect.scoped),
   );
 

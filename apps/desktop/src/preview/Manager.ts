@@ -659,7 +659,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const setFrameCaptureBackgroundThrottling = Effect.fnUntraced(function* (enabled: boolean) {
     const mainWindow = yield* Ref.get(mainWindowRef);
     if (Option.isNone(mainWindow)) return;
-    yield* setWindowBackgroundThrottling(mainWindow.value, enabled);
+    const serverCapturing = [...(yield* SynchronizedRef.get(tabsRef)).values()].some(
+      (tab) => tab.capturing,
+    );
+    yield* setWindowBackgroundThrottling(mainWindow.value, enabled && !serverCapturing);
   });
   const setFrameCaptureWebContentsBackgroundThrottling = Effect.fnUntraced(function* (
     wc: Electron.WebContents,
@@ -3223,6 +3226,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           candidate.serverTab.tabId === painting.key.tabId,
       );
       if (tab && tab.capturing !== painting.active) {
+        const mainWindow = yield* Ref.get(mainWindowRef);
+        if (Option.isSome(mainWindow)) {
+          const otherCapturing = [...(yield* SynchronizedRef.get(tabsRef)).values()].some(
+            (candidate) => candidate.tabId !== tab.tabId && candidate.capturing,
+          );
+          const frameCapturing = (yield* SynchronizedRef.get(frameCaptureSessionsRef)).size > 0;
+          yield* setWindowBackgroundThrottling(
+            mainWindow.value,
+            !painting.active && !otherCapturing && !frameCapturing,
+          );
+        }
         yield* update(tab.tabId, { capturing: painting.active });
       }
     },

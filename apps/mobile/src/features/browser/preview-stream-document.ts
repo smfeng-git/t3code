@@ -1,4 +1,8 @@
-import type { PreviewElementPickResult } from "@t3tools/contracts";
+import type {
+  PreviewElementPickResult,
+  PreviewElementSelection,
+  PreviewViewportSetting,
+} from "@t3tools/contracts";
 import type { DeviceHubAccess } from "@t3tools/client-runtime/device/hub-access";
 import type { PreviewStreamHostSetup } from "@t3tools/contracts";
 import type {
@@ -13,10 +17,23 @@ export interface PreviewStreamConfiguration {
   readonly tabId: string;
   readonly interactive: boolean;
   readonly background: string;
+  readonly viewport?: PreviewViewportSetting;
+}
+
+export interface PreviewLayoutState {
+  readonly type: "layout";
+  readonly state: "pending" | "ready" | "error" | "unsupported";
+  readonly setting: PreviewViewportSetting;
+  readonly detail?: string;
 }
 
 export type PreviewStreamMessage =
   | PreviewElementPickResult
+  | PreviewLayoutState
+  | { readonly type: "selectionPosition"; readonly side: "top" | "bottom" }
+  | { readonly type: "selectionCleared"; readonly detail: string }
+  | { readonly type: "selecting"; readonly active: boolean }
+  | { readonly type: "elementConfirmed"; readonly selection: PreviewElementSelection }
   | ({ readonly type: "control" } & PreviewStreamControl)
   | {
       readonly type: "status";

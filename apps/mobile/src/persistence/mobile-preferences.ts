@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import {
   EnvironmentId,
+  PreviewViewportSize,
   PullRequestInvolvement,
   PullRequestListFilters,
   PullRequestListState,
@@ -85,8 +86,10 @@ const ThreadProject = Schema.Struct({
   projectId: Schema.NonEmptyString,
 });
 const isThreadProject = Schema.is(ThreadProject);
+const isBrowserRecentViewports = Schema.is(Schema.Array(PreviewViewportSize));
 
 export interface Preferences {
+  readonly browserRecentViewports?: ReadonlyArray<PreviewViewportSize>;
   readonly navigationTabOrder?: readonly string[];
   readonly hiddenNavigationTabs?: readonly string[];
   readonly pullRequestHideTestFiles?: boolean;
@@ -204,6 +207,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListWorkingShelfExpanded?: boolean;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
+    browserRecentViewports?: ReadonlyArray<PreviewViewportSize>;
     workspaceSelections?: WorkspaceSelections;
   } = {};
 
@@ -355,6 +359,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isPullRequestListPreferences(parsed.pullRequestListFilters)) {
     preferences.pullRequestListFilters = parsed.pullRequestListFilters;
+  }
+  if (isBrowserRecentViewports(parsed.browserRecentViewports)) {
+    preferences.browserRecentViewports = parsed.browserRecentViewports.slice(0, 5);
   }
   if (isWorkspaceSelections(parsed.workspaceSelections)) {
     preferences.workspaceSelections = parsed.workspaceSelections;

@@ -1,5 +1,12 @@
 import { fitPreviewTransform, pinchPreviewTransform } from "./previewTransform";
 import {
+  type PreviewElementSelection,
+  type PreviewViewportSetting,
+  PREVIEW_VIEWPORT_MIN_DIMENSION,
+  PREVIEW_VIEWPORT_MAX_DIMENSION,
+  PREVIEW_VIEWPORT_MAX_AREA,
+} from "@t3tools/contracts";
+import {
   createPreviewFramePainter,
   createPreviewStreamClient,
   previewStreamModifiers,
@@ -44,7 +51,10 @@ const AGENT_CURSOR_SVG =
   '<svg width="20" height="20" viewBox="0 0 24 24" fill="#fff" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>';
 
 interface Viewer {
+  readonly fitToScreen: () => void;
   readonly resetZoom: () => void;
+  readonly retryLayout: () => void;
+  readonly highlightElement: (index: number, confirm: boolean) => void;
   readonly selectElement: (url: string | null) => void;
   readonly stop: () => void;
   readonly command: (input: PreviewStreamInput) => void;
@@ -65,8 +75,18 @@ export function command(input: PreviewStreamInput) {
 export function resetZoom() {
   activeViewer?.resetZoom();
 }
+export function retryLayout() {
+  activeViewer?.retryLayout();
+}
+export function fitToScreen() {
+  activeViewer?.fitToScreen();
+}
 export function selectElement(url: string | null) {
   activeViewer?.selectElement(url);
+}
+
+export function highlightElement(index: number, confirm = false) {
+  activeViewer?.highlightElement(index, confirm);
 }
 
 export function pictureInPicture() {
@@ -91,7 +111,10 @@ export function start(configuration: PreviewStreamConfiguration) {
   agentCursor.innerHTML = AGENT_CURSOR_SVG;
   const surface = document.createElement("div");
   surface.style.cssText = "position:absolute;inset:0;transform-origin:0 0";
-  surface.append(canvas, agentCursor);
+  const selectionCanvas = document.createElement("canvas");
+  selectionCanvas.style.pointerEvents = "none";
+  selectionCanvas.style.display = "none";
+  surface.append(canvas, selectionCanvas, agentCursor);
   container.append(surface);
   const input = document.createElement("textarea");
   input.setAttribute("aria-label", "Browser page input");
@@ -103,6 +126,69 @@ export function start(configuration: PreviewStreamConfiguration) {
   document.body.replaceChildren(container, ...(interactive ? [input] : []));
 
   let transform = fitPreviewTransform;
+  let pendingSelection: PreviewElementSelection | null = null;
+  let selectionImage: HTMLImageElement | null = null;
+  let highlightedIndex = 0;
+  let selectionSide: "top" | "bottom" | null = null;
+  const reportSelectionPosition = () => {
+    if (!pendingSelection || !size) return;
+    const candidate =
+      highlightedIndex === 0
+        ? pendingSelection
+        : pendingSelection.ancestors?.[highlightedIndex - 1];
+    if (!candidate) return;
+    const fit = Math.min(
+      size.width / pendingSelection.viewport.width,
+      size.height / pendingSelection.viewport.height,
+    );
+    const center =
+      transform.y +
+      transform.scale *
+        ((size.height - pendingSelection.viewport.height * fit) / 2 +
+          (candidate.rect.y + candidate.rect.height / 2) * fit);
+    const side = center > size.height / 2 ? "top" : "bottom";
+    if (side !== selectionSide) {
+      selectionSide = side;
+      post({ type: "selectionPosition", side });
+    }
+  };
+  const clearSelection = () => {
+    pendingSelection = null;
+    selectionImage = null;
+    selectionCanvas.style.display = "none";
+    selectionSide = null;
+  };
+  const highlightElement = (index: number, confirm: boolean) => {
+    if (!pendingSelection || !selectionImage || !Number.isInteger(index)) return;
+    const candidate = index === 0 ? pendingSelection : pendingSelection.ancestors?.[index - 1];
+    if (!candidate) return;
+    highlightedIndex = index;
+    reportSelectionPosition();
+    const context = selectionCanvas.getContext("2d");
+    if (!context) return;
+    selectionCanvas.width = selectionImage.naturalWidth;
+    selectionCanvas.height = selectionImage.naturalHeight;
+    context.drawImage(selectionImage, 0, 0);
+    context.scale(
+      selectionCanvas.width / pendingSelection.viewport.width,
+      selectionCanvas.height / pendingSelection.viewport.height,
+    );
+    context.strokeStyle = "#2563eb";
+    context.lineWidth = 3;
+    const { x, y, width, height } = candidate.rect;
+    context.strokeRect(x, y, width, height);
+    selectionCanvas.style.display = "block";
+    if (confirm)
+      post({
+        type: "elementConfirmed",
+        selection: {
+          element: candidate.element,
+          rect: candidate.rect,
+          viewport: pendingSelection.viewport,
+          screenshot: selectionCanvas.toDataURL("image/jpeg", 0.9),
+        },
+      });
+  };
   let pickUrl: string | null = null;
   let pickRequest: string | null = null;
   let pickTimer: ReturnType<typeof setTimeout> | null = null;
@@ -113,6 +199,7 @@ export function start(configuration: PreviewStreamConfiguration) {
   let lastPinch: { x: number; y: number; distance: number } | null = null;
   const applyTransform = () => {
     surface.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
+    reportSelectionPosition();
   };
   const resetZoom = () => {
     transform = fitPreviewTransform;
@@ -140,6 +227,10 @@ export function start(configuration: PreviewStreamConfiguration) {
   let cap: { width: number; height: number } | null = null;
   let client: PreviewStreamClient | null = null;
   let control: PreviewStreamControl | null = null;
+  let layoutSetting: PreviewViewportSetting = configuration.viewport ?? { _tag: "fill" };
+  let fittingViewport = layoutSetting._tag === "fill";
+  let layoutRequest: string | null = null;
+  let layoutTimer: ReturnType<typeof setTimeout> | null = null;
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
   let wheelFrame: number | null = null;
   let pendingWheel: WheelInput | null = null;
@@ -179,11 +270,71 @@ export function start(configuration: PreviewStreamConfiguration) {
     streaming = status === "streaming";
     post({ type: "status", status });
   };
-  const painter = createPreviewFramePainter(canvas, () => {
+  const painted = () => {
     if (!streaming && !stopped) reportStatus("streaming");
     sendPictureInPictureFrame();
-  });
-  const send = (message: PreviewStreamInput) => client?.send(message) ?? false;
+  };
+  let painter = createPreviewFramePainter(canvas, painted);
+  const send = (message: PreviewStreamInput) => {
+    if (
+      (layoutRequest !== null || pendingSelection !== null) &&
+      ["mouse", "wheel", "key", "text", "probe", "pickElement"].includes(message.type)
+    )
+      return false;
+    return client?.send(message) ?? false;
+  };
+  const applyViewport = (setting: Extract<PreviewStreamInput, { type: "viewport" }>["setting"]) => {
+    if (control?.controller !== "you") return;
+    if (!control.viewportSync) {
+      post({
+        type: "layout",
+        state: "unsupported",
+        setting: layoutSetting,
+        detail:
+          "This host supports viewing and local zoom. Update it to adapt the layout and select elements.",
+      });
+      return;
+    }
+    clearInput();
+    clearSelection();
+    pickUrl = null;
+    post({ type: "selectionCleared", detail: "Layout changed. Select an element again." });
+    input.disabled = !interactive;
+    const requestId = `layout-${++requestSequence}`;
+    layoutRequest = requestId;
+    post({ type: "layout", state: "pending", setting: layoutSetting });
+    painter.stop();
+    if (layoutTimer !== null) clearTimeout(layoutTimer);
+    layoutTimer = setTimeout(() => {
+      if (layoutRequest !== requestId) return;
+      post({
+        type: "layout",
+        state: "error",
+        setting: layoutSetting,
+        detail: "Layout was not confirmed. Retry to resume interaction.",
+      });
+    }, 10_000);
+    send({ type: "viewport", setting, requestId });
+  };
+  const resizeViewport = () => {
+    if (
+      fittingViewport &&
+      control?.controller === "you" &&
+      size &&
+      document.activeElement !== input
+    ) {
+      const scale = Math.min(
+        Math.max(1, PREVIEW_VIEWPORT_MIN_DIMENSION / Math.min(size.width, size.height)),
+        PREVIEW_VIEWPORT_MAX_DIMENSION / Math.max(size.width, size.height),
+        Math.sqrt(PREVIEW_VIEWPORT_MAX_AREA / (size.width * size.height)),
+      );
+      applyViewport({
+        _tag: "freeform",
+        width: Math.max(PREVIEW_VIEWPORT_MIN_DIMENSION, Math.floor(size.width * scale)),
+        height: Math.max(PREVIEW_VIEWPORT_MIN_DIMENSION, Math.floor(size.height * scale)),
+      });
+    }
+  };
   const clearInput = () => {
     if (wheelFrame !== null) cancelAnimationFrame(wheelFrame);
     if (mouseFrame !== null) cancelAnimationFrame(mouseFrame);
@@ -215,10 +366,45 @@ export function start(configuration: PreviewStreamConfiguration) {
         interactive,
       },
       {
-        onFrame: (jpeg) => painter.paint(jpeg),
+        onFrame: (jpeg) => {
+          if (layoutRequest === null) painter.paint(jpeg);
+        },
+        onViewportApplied: (result) => {
+          if (result.requestId !== layoutRequest || stopped || control?.controller !== "you")
+            return;
+          const image = result.image;
+          if (!image) {
+            if (layoutTimer !== null) clearTimeout(layoutTimer);
+            layoutTimer = null;
+            post({
+              type: "layout",
+              state: "error",
+              setting: layoutSetting,
+              detail: result.error ?? "Could not apply browser layout.",
+            });
+            return;
+          }
+          painter.stop();
+          painter = createPreviewFramePainter(canvas, () => {
+            if (layoutRequest === result.requestId) {
+              if (layoutTimer !== null) clearTimeout(layoutTimer);
+              layoutTimer = null;
+              viewport = { width: image.width, height: image.height };
+              layoutRequest = null;
+              post({ type: "viewport", ...viewport });
+              post({ type: "layout", state: "ready", setting: layoutSetting });
+            }
+            painted();
+          });
+          const bytes = Uint8Array.from(atob(image.screenshot.split(",")[1]!), (character) =>
+            character.charCodeAt(0),
+          );
+          painter.paint(bytes.buffer);
+        },
         onElementPicked: (result) => {
           if (result.requestId !== pickRequest) return;
           cancelPick();
+          post({ type: "selecting", active: false });
           if (!result.selection) {
             post(result);
             return;
@@ -228,27 +414,10 @@ export function start(configuration: PreviewStreamConfiguration) {
           const image = new Image();
           image.onload = () => {
             if (stopped || !pickUrl || generation !== pickGeneration) return;
-            const marked = document.createElement("canvas");
-            marked.width = image.naturalWidth;
-            marked.height = image.naturalHeight;
-            const context = marked.getContext("2d");
-            if (!context) {
-              post({ ...result, selection: null, error: "Could not draw selection." });
-              return;
-            }
-            context.drawImage(image, 0, 0);
-            context.scale(
-              marked.width / selection.viewport.width,
-              marked.height / selection.viewport.height,
-            );
-            context.strokeStyle = "#2563eb";
-            context.lineWidth = 3;
-            const { x, y, width, height } = selection.rect;
-            context.strokeRect(x, y, width, height);
-            post({
-              ...result,
-              selection: { ...selection, screenshot: marked.toDataURL("image/jpeg", 0.9) },
-            });
+            pendingSelection = selection;
+            selectionImage = image;
+            highlightElement(0, false);
+            post(result);
           };
           image.onerror = () => {
             if (!stopped && pickUrl && generation === pickGeneration)
@@ -261,8 +430,16 @@ export function start(configuration: PreviewStreamConfiguration) {
         onDownload: (download) => post({ type: "download", ...download }),
         onFileChooser: (chooser) => post({ type: "fileChooser", chooser }),
         onViewport: (page) => {
+          if (layoutRequest !== null) return;
           if (viewport?.width === page.width && viewport.height === page.height) return;
           viewport = page;
+          cancelPick();
+          clearSelection();
+          pickUrl = null;
+          post({
+            type: "selectionCleared",
+            detail: "Page dimensions changed. Select an element again.",
+          });
           post({ type: "viewport", width: page.width, height: page.height });
         },
         onProbe: (result) => {
@@ -291,17 +468,31 @@ export function start(configuration: PreviewStreamConfiguration) {
           control = nextControl;
           post({ type: "control", ...nextControl });
           if (nextControl.controller === "you") agentCursor.style.opacity = "0";
-          if (nextControl.controller !== "you") clearInput();
-          else {
+          if (nextControl.controller !== "you") {
+            clearInput();
+            clearSelection();
+            layoutRequest = null;
+            if (layoutTimer !== null) clearTimeout(layoutTimer);
+            painter.stop();
+            painter = createPreviewFramePainter(canvas, painted);
+          } else {
             input.disabled = !interactive;
-            if (interactive && size && previous?.controller !== "you")
-              next.send({ type: "resize", ...size });
+            if (interactive && size && previous?.controller !== "you") {
+              if (nextControl.viewportSync) next.send({ type: "resize", ...size });
+              if (fittingViewport) resizeViewport();
+              else applyViewport(layoutSetting);
+            }
           }
         },
         onConnectedChange: (connected) => {
           if (!connected) {
             control = null;
             clearInput();
+            clearSelection();
+            layoutRequest = null;
+            if (layoutTimer !== null) clearTimeout(layoutTimer);
+            painter.stop();
+            painter = createPreviewFramePainter(canvas, painted);
             if (streaming) reportStatus("connecting");
             return;
           }
@@ -320,13 +511,22 @@ export function start(configuration: PreviewStreamConfiguration) {
     if (rect.width < 1 || rect.height < 1) return;
     const next = { width: Math.round(rect.width), height: Math.round(rect.height) };
     if (size?.width === next.width && size.height === next.height) return;
+    if (size && size.width !== next.width && document.activeElement === input) input.blur();
     size = next;
+    cancelPick();
+    if (pickUrl) {
+      clearSelection();
+      pickUrl = null;
+      post({ type: "selectionCleared", detail: "Screen size changed. Select an element again." });
+    }
     resetZoom();
-    if (interactive) send({ type: "resize", ...next });
+    if (interactive && control?.viewportSync) send({ type: "resize", ...next });
+    resizeViewport();
     const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
-    const side = Math.max(next.width, next.height);
-    const width = Math.round((interactive ? next.width : side) * ratio);
-    const height = Math.round((interactive ? next.height : side) * ratio);
+    const side = Math.max(next.width, next.height, window.screen.width, window.screen.height);
+    // Reserve both orientations without disconnecting the viewer that owns control.
+    const width = Math.round(side * ratio);
+    const height = width;
     if (cap && cap.width >= width && cap.height >= height) return;
     cap = { width: Math.max(width, cap?.width ?? 0), height: Math.max(height, cap?.height ?? 0) };
     connect();
@@ -374,7 +574,13 @@ export function start(configuration: PreviewStreamConfiguration) {
   };
 
   const pagePoint = (clientX: number, clientY: number, clamp: boolean) => {
-    if (!viewport || canvas.width === 0 || canvas.height === 0 || control?.controller !== "you")
+    if (
+      layoutRequest !== null ||
+      !viewport ||
+      canvas.width === 0 ||
+      canvas.height === 0 ||
+      control?.controller !== "you"
+    )
       return null;
     const rect = canvas.getBoundingClientRect();
     const fit = Math.min(rect.width / canvas.width, rect.height / canvas.height);
@@ -448,7 +654,8 @@ export function start(configuration: PreviewStreamConfiguration) {
     modifiers: previewStreamModifiers(event),
   });
   const requestElement = (point: { x: number; y: number }) => {
-    if (pickUrl) {
+    if (pickUrl && !pendingSelection && control?.controller === "you" && control.viewportSync) {
+      clearSelection();
       cancelPick();
       const requestId = String(++requestSequence);
       pickRequest = requestId;
@@ -458,6 +665,7 @@ export function start(configuration: PreviewStreamConfiguration) {
       }
       pickTimer = setTimeout(() => {
         cancelPick();
+        post({ type: "selecting", active: false });
         post({
           type: "elementPicked",
           requestId,
@@ -465,10 +673,17 @@ export function start(configuration: PreviewStreamConfiguration) {
           error: "Selection timed out. Tap to try again.",
         });
       }, 10_000);
+      post({ type: "selecting", active: true });
     }
   };
   const onPointerDown = (event: PointerEvent) => {
     if (event.pointerType === "touch") {
+      if (event.isPrimary) {
+        // A new primary touch starts a sequence even if the previous WebView gesture lost its end.
+        fingers.clear();
+        pinching = false;
+        lastPinch = null;
+      }
       fingers.set(event.pointerId, fingerPosition(event));
       canvas.setPointerCapture(event.pointerId);
       if (fingers.size >= 2) {
@@ -830,9 +1045,20 @@ export function start(configuration: PreviewStreamConfiguration) {
   };
 
   activeViewer = {
+    fitToScreen: () => {
+      resetZoom();
+      if (control?.controller !== "you") return;
+      fittingViewport = true;
+      layoutSetting = { _tag: "fill" };
+      resizeViewport();
+    },
     resetZoom,
+    retryLayout: () => (fittingViewport ? resizeViewport() : applyViewport(layoutSetting)),
+    highlightElement,
     selectElement: (url) => {
+      clearSelection();
       cancelPick();
+      post({ type: "selecting", active: false });
       pickUrl = url;
       probe = null;
       touch = null;
@@ -846,6 +1072,7 @@ export function start(configuration: PreviewStreamConfiguration) {
       visualViewport?.removeEventListener("resize", followVisualViewport);
       visualViewport?.removeEventListener("scroll", followVisualViewport);
       if (resizeTimer !== null) clearTimeout(resizeTimer);
+      if (layoutTimer !== null) clearTimeout(layoutTimer);
       if (wheelFrame !== null) cancelAnimationFrame(wheelFrame);
       if (mouseFrame !== null) cancelAnimationFrame(mouseFrame);
       if (agentCursorTimer !== null) clearTimeout(agentCursorTimer);
@@ -856,6 +1083,18 @@ export function start(configuration: PreviewStreamConfiguration) {
       if (video) video.srcObject = null;
     },
     command: (message) => {
+      if (message.type === "viewport") {
+        fittingViewport = false;
+        layoutSetting = message.setting;
+        applyViewport(message.setting);
+        return;
+      }
+      if (["navigate", "history", "reload"].includes(message.type)) {
+        cancelPick();
+        clearSelection();
+        pickUrl = null;
+        post({ type: "selectionCleared", detail: "Page navigation cancelled the selection." });
+      }
       send(message);
     },
     togglePictureInPicture,

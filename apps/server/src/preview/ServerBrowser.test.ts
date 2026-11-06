@@ -211,13 +211,17 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
     reload: vi.fn(async () => {}),
     emulateMedia: vi.fn(async () => {}),
     waitForLoadState: vi.fn(async () => {}),
-    evaluate: vi.fn(async () => ({
-      url,
-      title: "test page",
-      loading: false,
-      visibleText: "delete",
-      interactiveElements: [],
-    })),
+    evaluate: vi.fn(async (expression?: unknown) =>
+      expression === "({ width: innerWidth, height: innerHeight })"
+        ? viewport
+        : {
+            url,
+            title: "test page",
+            loading: false,
+            visibleText: "delete",
+            interactiveElements: [],
+          },
+    ),
     ariaSnapshot: vi.fn(async () => '- button "delete" [ref=e1]'),
     locator: vi.fn(() => {
       throw new Error("Unexpected locator action");
@@ -826,6 +830,11 @@ it.live("streams to a read-only viewer without allowing takeover, input, or view
           pageUrl: "http://localhost:5173",
         },
         { type: "viewport", setting: { _tag: "freeform", width: 390, height: 844 } },
+        {
+          type: "viewport",
+          requestId: "reader-layout",
+          setting: { _tag: "freeform", width: 844, height: 390 },
+        },
       ])
         yield* viewer.input(message);
       expect(page.setViewportSize).not.toHaveBeenCalled();
@@ -847,7 +856,64 @@ it.live("streams to a read-only viewer without allowing takeover, input, or view
         text: "typed",
       });
       expect(page.setViewportSize).toHaveBeenCalledWith({ width: 390, height: 844 });
+      const operatorSession = contexts[0]!.sessions.at(-1)!;
+      const send = operatorSession.send.getMockImplementation()!;
+      let painting = true;
+      operatorSession.send.mockImplementation(async (method, params) => {
+        if (method === "Page.stopScreencast") painting = false;
+        if (method === "Page.startScreencast") painting = true;
+        if (method === "Page.captureScreenshot" && !painting)
+          throw new Error("The background guest stopped painting.");
+        return send(method, params);
+      });
+      yield* operator.input({
+        type: "viewport",
+        requestId: "landscape",
+        setting: { _tag: "freeform", width: 844, height: 390 },
+      });
+      const changed = yield* Queue.takeAll(operator.output);
+      expect([...changed]).toContainEqual(
+        expect.objectContaining({
+          _tag: "viewportApplied",
+          requestId: "landscape",
+          error: null,
+          image: expect.objectContaining({ width: 844, height: 390 }),
+        }),
+      );
       yield* operator.input({ type: "releaseControl" });
+      expect(page.setViewportSize).toHaveBeenLastCalledWith({ width: 1280, height: 800 });
+      const zoomApplied = Promise.withResolvers<void>();
+      const tabSession = contexts[0]!.sessions[0]!;
+      const tabSend = tabSession.send.getMockImplementation()!;
+      tabSession.send.mockImplementation(async (method, params) => {
+        if (method === "Emulation.setDeviceMetricsOverride") zoomApplied.resolve();
+        return tabSend(method, params);
+      });
+      const manager = yield* Manager.PreviewManager;
+      yield* manager.adjust({ threadId: scope.thread.threadId, tabId, zoomFactor: 2 });
+      yield* Effect.promise(() => zoomApplied.promise);
+      const evaluate = page.evaluate.getMockImplementation()!;
+      page.evaluate.mockImplementation(async (expression) => {
+        if (expression === "({ width: innerWidth, height: innerHeight })") {
+          const size = page.viewportSize()!;
+          return { width: size.width / 2, height: size.height / 2 };
+        }
+        return evaluate(expression);
+      });
+      yield* operator.input({ type: "takeControl" });
+      yield* operator.input({
+        type: "viewport",
+        requestId: "zoomed",
+        setting: { _tag: "freeform", width: 1280, height: 720 },
+      });
+      expect(yield* Queue.takeAll(operator.output)).toContainEqual(
+        expect.objectContaining({
+          _tag: "viewportApplied",
+          requestId: "zoomed",
+          error: null,
+          image: expect.objectContaining({ width: 640, height: 360 }),
+        }),
+      );
     }),
   ).pipe(Effect.provide(layer)),
 );

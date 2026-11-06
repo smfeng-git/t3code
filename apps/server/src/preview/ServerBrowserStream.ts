@@ -148,6 +148,15 @@ const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBr
       const sendOutput = Queue.take(viewer.output).pipe(
         Effect.flatMap((output) => {
           switch (output._tag) {
+            case "viewportApplied": {
+              const superseded = pending;
+              pending = null;
+              const { _tag: type, ...data } = output;
+              return Effect.andThen(
+                superseded ? Effect.forkScoped(superseded.ack) : Effect.void,
+                write(JSON.stringify({ type, ...data })),
+              );
+            }
             case "frame": {
               if (inFlight === null) return sendFrame(output);
               const superseded = pending;

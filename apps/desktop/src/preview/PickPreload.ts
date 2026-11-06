@@ -412,6 +412,17 @@ async function captureElement(element: Element): Promise<PickedElementPayload> {
   };
 }
 
+Object.defineProperty(window, "__t3PreviewCaptureElement", {
+  value: async (x: number, y: number, depth: number | undefined) => {
+    let element = findPreviewElement(x, y, document);
+    for (let level = 0; element && level < Math.min(depth ?? 0, 6); level++)
+      element = element.parentElement;
+    if (!element) return null;
+    const { pickedAt: _pickedAt, stack: _stack, ...details } = await captureElement(element);
+    return details;
+  },
+});
+
 function createButton(label: string, title: string): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";

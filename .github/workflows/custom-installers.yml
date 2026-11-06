@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_VERSION: 0.1.7-preview.20261106.1
+  RELEASE_VERSION: 0.1.7-preview.20261107.1
   T3CODE_MOBILE_UPDATES_ENABLED: "0"
   # Public application identifiers; users authenticate with their own accounts.
   T3CODE_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsudDMuY29kZXMk
@@ -138,10 +138,14 @@ jobs:
           apk=$(find apps/mobile/android/app/build/outputs/apk/release -name '*.apk' | head -1)
           test -n "$apk"
           "$tools/zipalign" -P 16 -f 4 "$apk" "$RUNNER_TEMP/aligned.apk"
-          "$tools/apksigner" sign --ks "$RUNNER_TEMP/custom.p12" --ks-key-alias t3shared --ks-pass env:SIGNING_PASSWORD --key-pass env:SIGNING_PASSWORD --out release-custom/T3-Shared-Android-arm64.apk "$RUNNER_TEMP/aligned.apk"
-          "$tools/apksigner" verify --verbose release-custom/T3-Shared-Android-arm64.apk
-          "$tools/aapt" dump badging release-custom/T3-Shared-Android-arm64.apk | head -5
-          unzip -l release-custom/T3-Shared-Android-arm64.apk | grep 'assets/index.android.bundle'
+          "$tools/apksigner" sign --ks "$RUNNER_TEMP/custom.p12" --ks-key-alias t3shared --ks-pass env:SIGNING_PASSWORD --key-pass env:SIGNING_PASSWORD --out release-custom/T3-Code-Preview-Android-arm64.apk "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify --verbose --print-certs release-custom/T3-Code-Preview-Android-arm64.apk
+          "$tools/aapt" dump badging release-custom/T3-Code-Preview-Android-arm64.apk > "$RUNNER_TEMP/apk-badging.txt"
+          grep -F "package: name='com.t3tools.t3code.preview'" "$RUNNER_TEMP/apk-badging.txt"
+          grep -F "application-label:'T3 Code Preview'" "$RUNNER_TEMP/apk-badging.txt"
+          "$tools/aapt" dump xmltree release-custom/T3-Code-Preview-Android-arm64.apk AndroidManifest.xml > "$RUNNER_TEMP/apk-manifest.txt"
+          grep -F 't3code-preview' "$RUNNER_TEMP/apk-manifest.txt"
+          unzip -l release-custom/T3-Code-Preview-Android-arm64.apk | grep 'assets/index.android.bundle'
       - uses: actions/upload-artifact@v4
         with:
           name: custom-android

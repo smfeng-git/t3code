@@ -1,4 +1,8 @@
-import type { PreviewElementPickResult, PreviewElementPick } from "@t3tools/contracts";
+import type {
+  PreviewElementPickResult,
+  PreviewElementPick,
+  PreviewViewportSyncResult,
+} from "@t3tools/contracts";
 // @effect-diagnostics globalTimers:off globalFetch:off - This browser and WebView transport runs without an Effect runtime.
 import { type DeviceHubAccess, withDeviceHubQuery } from "../device/hubAccess.ts";
 import {
@@ -17,6 +21,7 @@ export interface PreviewStreamViewport {
 export type PreviewStreamMouseButton = "none" | "left" | "middle" | "right";
 
 export interface PreviewStreamControl {
+  readonly viewportSync?: boolean;
   readonly canOperate: boolean;
   readonly controller: "agent" | "you" | "another-viewer" | "unclaimed";
   readonly generation: number;
@@ -56,7 +61,11 @@ export type PreviewStreamInput =
   | { readonly type: "takeControl" }
   | { readonly type: "releaseControl" }
   | { readonly type: "dialog"; readonly accept: boolean; readonly promptText?: string }
-  | { readonly type: "viewport"; readonly setting: PreviewViewportSetting }
+  | {
+      readonly type: "viewport";
+      readonly setting: PreviewViewportSetting;
+      readonly requestId?: string;
+    }
   | {
       readonly type: "mouse";
       readonly action: "move" | "down" | "up";
@@ -185,6 +194,7 @@ export interface PreviewStreamTarget {
 }
 
 export interface PreviewStreamEvents {
+  readonly onViewportApplied?: (result: PreviewViewportSyncResult) => void;
   readonly onElementPicked?: (result: PreviewElementPickResult) => void;
   readonly onFrame: (jpeg: ArrayBuffer) => void;
   readonly onViewport: (viewport: PreviewStreamViewport) => void;
@@ -293,6 +303,23 @@ export function createPreviewStreamClient(
         return;
       }
       if (typeof message !== "object" || message === null) return;
+      if ("type" in message && message.type === "viewportApplied") {
+        const result = message as Partial<PreviewViewportSyncResult>;
+        if (
+          typeof result.requestId === "string" &&
+          (result.error === null || typeof result.error === "string") &&
+          (result.image === null ||
+            (result.image &&
+              Number.isFinite(result.image.width) &&
+              Number.isFinite(result.image.height) &&
+              result.image.width > 0 &&
+              result.image.height > 0 &&
+              typeof result.image.screenshot === "string" &&
+              result.image.screenshot.startsWith("data:image/jpeg;base64,")))
+        )
+          events.onViewportApplied?.(result as PreviewViewportSyncResult);
+        return;
+      }
       if (isElementPickResult(message)) {
         events.onElementPicked?.(message);
         return;
@@ -379,6 +406,7 @@ export function createPreviewStreamClient(
         isPreviewStreamDialog(dialog)
       ) {
         const nextControl: PreviewStreamControl = {
+          ...("viewportSync" in message ? { viewportSync: message.viewportSync === true } : {}),
           canOperate,
           controller,
           generation,

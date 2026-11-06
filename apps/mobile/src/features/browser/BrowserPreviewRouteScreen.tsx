@@ -1,5 +1,11 @@
 import { useWindowDimensions } from "react-native";
-import type { PreviewElementSelection } from "@t3tools/contracts";
+import type { PreviewElementSelection, PreviewViewportSetting } from "@t3tools/contracts";
+import { useAtomSet } from "@effect/atom-react";
+import { updateMobilePreferencesAtom } from "../../state/preferences";
+import { rememberBrowserViewport } from "./browserViewport";
+import type { PreviewLayoutState } from "./preview-stream-document";
+import type { PreviewStreamControl } from "@t3tools/client-runtime/preview/server-browser-stream";
+import { AppText } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { setBrowserOrientation } from "./browserOrientation";
 import { BrowserAnnotationSheet } from "./BrowserAnnotationSheet";
@@ -17,6 +23,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ControlPill } from "../../components/ui/ControlPill";
 import { useAppForeground } from "../../lib/appState";
+import { useHardwareBack } from "../../lib/backHandler";
 import { AppBar } from "../../components/ui/AppBar";
 
 import { useThreadServerBrowserTabs } from "../../state/preview";
@@ -89,10 +96,40 @@ function BrowserPreviewScreen({
   const [selectedTabId, setSelectedTabId] = useState(initialTabId);
   const [pictureInPicture, setPictureInPicture] = useState(NO_PICTURE_IN_PICTURE);
   const [streaming, setStreaming] = useState(false);
-  const [canControl, setCanControl] = useState(false);
+  const [control, setControl] = useState<PreviewStreamControl | null>(null);
+  const canControl = control?.controller === "you";
   const streamRef = useRef<PreviewStreamRef>(null);
+  const [layouts, setLayouts] = useState<Record<string, PreviewViewportSetting>>({});
+  const [layoutState, setLayoutState] = useState<PreviewLayoutState | null>(null);
+  const [selectionSide, setSelectionSide] = useState<"top" | "bottom">("bottom");
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  const pendingRecent = useRef<{ tabId: string; width: number; height: number } | null>(null);
+  const updatePreferences = useAtomSet(updateMobilePreferencesAtom);
   const dimensions = useWindowDimensions();
+  const compactToolbar = Platform.OS === "android" && dimensions.width > dimensions.height;
+  const navigation = useNavigation();
+  const [landscape, setLandscape] = useState(compactToolbar);
+  const [fullscreen, setFullscreen] = useState(compactToolbar);
+  const [controlsOpen, setControlsOpen] = useState(false);
+  if (landscape !== compactToolbar) {
+    setLandscape(compactToolbar);
+    setFullscreen(compactToolbar);
+    setControlsOpen(false);
+  }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- synchronizes Android system bars with the focused native browser screen
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    navigation.setOptions({
+      statusBarHidden: focused && fullscreen,
+      navigationBarHidden: focused && fullscreen,
+    });
+  }, [navigation, focused, fullscreen]);
   const [pickScope, setPickScope] = useState<string | null>(null);
+  const [candidate, setCandidate] = useState<{
+    selection: PreviewElementSelection;
+    index: number;
+    scope: string;
+  } | null>(null);
   const [selection, setSelection] = useState<PreviewElementSelection | null>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns native orientation only while the browser route is focused
   useEffect(() => {
@@ -127,59 +164,101 @@ function BrowserPreviewScreen({
   };
   const live = (focused && foreground) || pictureInPicture.active;
   const pageUrl = tab ? browserTabUrl(tab) : "";
-  const selectionScope = `${tabId}:${pageUrl}:${canControl}:${live}`;
+  const selectionScope = `${tabId}:${pageUrl}:${canControl}:${live}:${streaming}`;
   const picking = pickScope === selectionScope;
   const setPicking = (active: boolean) => setPickScope(active ? selectionScope : null);
   if (pickScope !== null && pickScope !== selectionScope) setPickScope(null);
+  if (candidate && (!picking || candidate.scope !== selectionScope)) setCandidate(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- synchronizes selection mode with the WebView and cancels stale requests
   useEffect(() => {
     streamRef.current?.selectElement(picking ? pageUrl : null);
   }, [picking, pageUrl, streamRef]);
 
+  useHardwareBack((fullscreen || picking || controlsOpen) && selection === null, () => {
+    if (controlsOpen) setControlsOpen(false);
+    else if (picking) {
+      setPicking(false);
+      setCandidate(null);
+    } else setFullscreen(false);
+    return true;
+  });
+  const highlighted = candidate
+    ? candidate.index === 0
+      ? candidate.selection
+      : candidate.selection.ancestors?.[candidate.index - 1]
+    : null;
+  const withControlsClosed = (action: () => void) => {
+    action();
+    setControlsOpen(false);
+  };
+  const viewportSetting = (tabId && layouts[tabId]) || { _tag: "fill" as const };
+  const viewportEnabled = streaming && canControl && !!control?.viewportSync;
+  const changeViewport = (setting: PreviewViewportSetting, remember = false) => {
+    if (!tabId || !viewportEnabled) return;
+    pendingRecent.current =
+      remember && setting._tag === "freeform"
+        ? { tabId, width: setting.width, height: setting.height }
+        : null;
+    setLayouts((current) => ({ ...current, [tabId]: setting }));
+    if (setting._tag === "fill") streamRef.current?.fitToScreen();
+    else streamRef.current?.command({ type: "viewport", setting });
+    setControlsOpen(false);
+  };
+
   return (
-    <View className="flex-1 bg-sheet" style={{ paddingBottom: insets.bottom }}>
-      <AppBar
-        title={tab ? browserTabTitle(tab) : "Browser"}
-        onBack={onClose}
-        options={{ headerBackVisible: false }}
-        actions={
-          // Android WebView cannot play video in picture in picture.
-          Platform.OS === "ios" &&
-          pictureInPicture.supported &&
-          (pictureInPicture.active || pdfUri === null)
-            ? [
-                {
-                  accessibilityLabel: pictureInPicture.active
-                    ? "Exit picture in picture"
-                    : "Picture in picture",
-                  icon: {
-                    ios: pictureInPicture.active ? "pip.exit" : "pip.enter",
-                    android: "visibility",
+    <View
+      className="flex-1 bg-sheet"
+      style={{
+        paddingBottom: insets.bottom,
+        paddingTop: compactToolbar || fullscreen ? insets.top : 0,
+        paddingLeft: insets.left,
+        paddingRight: insets.right,
+      }}
+    >
+      {!compactToolbar && !fullscreen ? (
+        <AppBar
+          title={tab ? browserTabTitle(tab) : "Browser"}
+          onBack={onClose}
+          options={{ headerBackVisible: false }}
+          actions={
+            // Android WebView cannot play video in picture in picture.
+            Platform.OS === "ios" &&
+            pictureInPicture.supported &&
+            (pictureInPicture.active || pdfUri === null)
+              ? [
+                  {
+                    accessibilityLabel: pictureInPicture.active
+                      ? "Exit picture in picture"
+                      : "Picture in picture",
+                    icon: {
+                      ios: pictureInPicture.active ? "pip.exit" : "pip.enter",
+                      android: "visibility",
+                    },
+                    selected: pictureInPicture.active,
+                    onPress: () => streamRef.current?.togglePictureInPicture(),
                   },
-                  selected: pictureInPicture.active,
-                  onPress: () => streamRef.current?.togglePictureInPicture(),
-                },
-              ]
-            : []
-        }
-        menus={
-          tabs.length > 1
-            ? [
-                {
-                  title: "Tabs",
-                  icon: "square.on.square",
-                  items: tabs.map((entry) => ({
-                    id: entry.tabId,
-                    title: browserTabTitle(entry),
-                    subtitle: browserTabUrl(entry),
-                    selected: entry.tabId === tabId,
-                    onPress: () => selectTab(entry.tabId),
-                  })),
-                },
-              ]
-            : []
-        }
-      />
+                ]
+              : []
+          }
+          menus={
+            tabs.length > 1
+              ? [
+                  {
+                    title: "Tabs",
+                    icon: "square.on.square",
+                    items: tabs.map((entry) => ({
+                      id: entry.tabId,
+                      title: browserTabTitle(entry),
+                      subtitle: browserTabUrl(entry),
+                      selected: entry.tabId === tabId,
+                      onPress: () => selectTab(entry.tabId),
+                    })),
+                  },
+                ]
+              : []
+          }
+        />
+      ) : null}
       {Platform.OS === "ios" ? (
         <SheetHeader
           title={tab ? browserTabTitle(tab) : "Browser"}
@@ -192,6 +271,10 @@ function BrowserPreviewScreen({
           selection={selection}
           draftKey={`${environmentId}:${threadId}`}
           onClose={() => setSelection(null)}
+          onReselect={() => {
+            setSelection(null);
+            setPicking(true);
+          }}
           onAdded={() => {
             setSelection(null);
             onClose();
@@ -200,37 +283,114 @@ function BrowserPreviewScreen({
       ) : null}
       {tab ? (
         <>
-          <BrowserAddressBar
-            key={`address:${tab.tabId}`}
-            environmentId={environmentId}
-            tab={tab}
-            streaming={streaming}
-            ready={streaming && canControl}
-            onCommand={(input) => streamRef.current?.command(input)}
-            onPaste={() => streamRef.current?.paste()}
-          />
-          <View className="flex-row flex-wrap gap-2 px-2 pb-2">
-            {Platform.OS === "android" ? (
+          <View
+            style={
+              fullscreen
+                ? {
+                    position: "absolute",
+                    top: insets.top,
+                    left: insets.left,
+                    right: insets.right,
+                    zIndex: 1,
+                    display: controlsOpen ? "flex" : "none",
+                  }
+                : undefined
+            }
+            className="bg-sheet"
+          >
+            <BrowserAddressBar
+              key={`address:${tab.tabId}`}
+              environmentId={environmentId}
+              tab={tab}
+              streaming={streaming}
+              ready={
+                streaming &&
+                canControl &&
+                !candidate &&
+                layoutState?.state !== "pending" &&
+                layoutState?.state !== "error"
+              }
+              onCommand={(input) => withControlsClosed(() => streamRef.current?.command(input))}
+              onPaste={() => withControlsClosed(() => streamRef.current?.paste())}
+              viewportSetting={viewportSetting}
+              viewportEnabled={viewportEnabled}
+              onViewportChange={changeViewport}
+              onClose={compactToolbar ? onClose : undefined}
+            />
+            <View className="flex-row flex-wrap gap-2 px-2 pb-2">
+              {Platform.OS === "android" ? (
+                <Button
+                  size="compact"
+                  label="Rotate"
+                  onPress={() => {
+                    setControlsOpen(false);
+                    void setBrowserOrientation(
+                      dimensions.width > dimensions.height ? "portrait" : "landscape",
+                    ).catch((error: unknown) => Dialog.alert("Could not rotate", String(error)));
+                  }}
+                />
+              ) : null}
               <Button
                 size="compact"
-                label="Rotate"
+                label="Auto-fit layout"
+                disabled={!viewportEnabled}
+                onPress={() => changeViewport({ _tag: "fill" })}
+              />
+              <Button
+                size="compact"
+                label="Reset view"
+                onPress={() => withControlsClosed(() => streamRef.current?.resetZoom())}
+              />
+              <Button
+                size="compact"
+                label={picking ? "Cancel selection" : "Annotate"}
+                disabled={
+                  !viewportEnabled ||
+                  layoutState?.state === "pending" ||
+                  layoutState?.state === "error" ||
+                  pdfUri !== null
+                }
                 onPress={() => {
-                  void setBrowserOrientation(
-                    dimensions.width > dimensions.height ? "portrait" : "landscape",
-                  ).catch((error: unknown) => Dialog.alert("Could not rotate", String(error)));
+                  streamRef.current?.selectElement(picking ? null : pageUrl);
+                  setPicking(!picking);
+                  setSelectionNotice(null);
+                  setControlsOpen(false);
                 }}
               />
-            ) : null}
-            <Button size="compact" label="Fit" onPress={() => streamRef.current?.resetZoom()} />
-            <Button
-              size="compact"
-              label={picking ? "Cancel selection" : "Annotate"}
-              disabled={!streaming || !canControl || pdfUri !== null}
-              onPress={() => {
-                streamRef.current?.selectElement(picking ? null : pageUrl);
-                setPicking(!picking);
-              }}
-            />
+              {Platform.OS === "android" ? (
+                <Button
+                  size="compact"
+                  label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+                  onPress={() => {
+                    setFullscreen(!fullscreen);
+                    setControlsOpen(false);
+                  }}
+                />
+              ) : null}
+              {fullscreen ? (
+                <Button
+                  size="compact"
+                  label="Hide controls"
+                  onPress={() => setControlsOpen(false)}
+                />
+              ) : null}
+              {control?.canOperate ? (
+                <View className="ml-auto">
+                  <Button
+                    size="compact"
+                    label={canControl ? "Release control" : "Take control"}
+                    disabled={control.controller === "another-viewer"}
+                    onPress={() =>
+                      withControlsClosed(() =>
+                        streamRef.current?.command({
+                          type: canControl ? "releaseControl" : "takeControl",
+                        }),
+                      )
+                    }
+                  />
+                </View>
+              ) : null}
+            </View>
           </View>
           {live ? (
             <PreviewStreamWebView
@@ -240,7 +400,37 @@ function BrowserPreviewScreen({
               tabId={tab.tabId}
               pdfUri={pdfUri}
               ref={streamRef}
+              initialViewport={viewportSetting}
+              onLayoutState={(next) => {
+                setLayoutState(next);
+                setLayouts((current) => ({ ...current, [tab.tabId]: next.setting }));
+                const recent = pendingRecent.current;
+                if (
+                  next.state === "ready" &&
+                  recent?.tabId === tab.tabId &&
+                  next.setting._tag === "freeform" &&
+                  next.setting.width === recent.width &&
+                  next.setting.height === recent.height
+                ) {
+                  pendingRecent.current = null;
+                  updatePreferences({
+                    transform: (current) => ({
+                      browserRecentViewports: rememberBrowserViewport(
+                        current.browserRecentViewports ?? [],
+                        { width: recent.width, height: recent.height },
+                      ),
+                    }),
+                  });
+                }
+              }}
+              onSelectionPosition={setSelectionSide}
+              onSelectionCleared={(detail) => {
+                if (candidate || picking) setSelectionNotice(detail);
+                setCandidate(null);
+                setPicking(false);
+              }}
               interactive
+              hideControlBar
               background={themeVariables["--color-sheet-solid"]}
               onPictureInPicture={onPictureInPicture}
               onElementPicked={(result) => {
@@ -248,16 +438,100 @@ function BrowserPreviewScreen({
                   Dialog.alert("Could not select element", result.error);
                   return;
                 }
+                if (result.selection) {
+                  setSelectionNotice(null);
+                  setCandidate({ selection: result.selection, index: 0, scope: selectionScope });
+                }
+              }}
+              onViewport={() => {
+                setCandidate(null);
+              }}
+              onElementConfirmed={(confirmed) => {
+                if (!candidate || !picking || candidate.scope !== selectionScope) return;
                 streamRef.current?.selectElement(null);
                 setPicking(false);
-                setSelection(result.selection);
+                setCandidate(null);
+                setSelection(confirmed);
               }}
               onStreamingChange={setStreaming}
-              onControl={(control) => setCanControl(control?.controller === "you")}
+              onControl={(next) => {
+                setControl(next);
+                if (!next) setLayoutState(null);
+              }}
             />
           ) : (
             <View className="flex-1" />
           )}
+          {candidate ? (
+            <View
+              className="absolute left-0 right-0 gap-2 bg-sheet px-3 py-2"
+              style={selectionSide === "top" ? { top: insets.top } : { bottom: insets.bottom }}
+            >
+              <AppText numberOfLines={1} className="text-sm text-foreground">
+                Frozen snapshot · {candidate.index === 0 ? "Element" : `Parent ${candidate.index}`}:{" "}
+                {highlighted?.element.componentName ??
+                  highlighted?.element.selector ??
+                  highlighted?.element.tagName}
+              </AppText>
+              <AppText className="text-xs text-foreground-muted">
+                The PC page is still running. Pinch to inspect this snapshot.
+              </AppText>
+              <View className="flex-row flex-wrap gap-2">
+                <Button
+                  label="Parent"
+                  disabled={candidate.index >= (candidate.selection.ancestors?.length ?? 0)}
+                  onPress={() => {
+                    streamRef.current?.highlightElement(candidate.index + 1);
+                    setCandidate({ ...candidate, index: candidate.index + 1 });
+                  }}
+                />
+                <Button
+                  label="Previous level"
+                  disabled={candidate.index === 0}
+                  onPress={() => {
+                    streamRef.current?.highlightElement(candidate.index - 1);
+                    setCandidate({ ...candidate, index: candidate.index - 1 });
+                  }}
+                />
+                <Button
+                  label="Reselect"
+                  onPress={() => {
+                    setCandidate(null);
+                    streamRef.current?.selectElement(pageUrl);
+                  }}
+                />
+                <Button
+                  label="Cancel"
+                  onPress={() => {
+                    setCandidate(null);
+                    setPicking(false);
+                  }}
+                />
+                <Button
+                  label="Confirm element"
+                  tone="primary"
+                  onPress={() => streamRef.current?.highlightElement(candidate.index, true)}
+                />
+              </View>
+            </View>
+          ) : null}
+          {selectionNotice && !candidate ? (
+            <View className="absolute bottom-0 left-0 right-0 bg-sheet px-3 py-2">
+              <AppText accessibilityLiveRegion="polite" className="text-sm text-foreground">
+                {selectionNotice}
+              </AppText>
+              <Button label="Dismiss" tone="text" onPress={() => setSelectionNotice(null)} />
+            </View>
+          ) : null}
+          {fullscreen && !controlsOpen && !candidate ? (
+            <View style={{ position: "absolute", top: insets.top + 8, right: insets.right + 8 }}>
+              <ControlPill
+                icon="ellipsis"
+                accessibilityLabel="Show browser controls"
+                onPress={() => setControlsOpen(true)}
+              />
+            </View>
+          ) : null}
         </>
       ) : (
         <View className="flex-1 items-center justify-center">
@@ -277,6 +551,10 @@ function BrowserAddressBar({
   streaming,
   onCommand,
   onPaste,
+  viewportSetting,
+  viewportEnabled,
+  onViewportChange,
+  onClose,
 }: {
   readonly environmentId: EnvironmentId;
   readonly tab: PreviewSessionSnapshot;
@@ -284,6 +562,10 @@ function BrowserAddressBar({
   readonly streaming: boolean;
   readonly onCommand: PreviewStreamRef["command"];
   readonly onPaste: () => void;
+  readonly viewportSetting: PreviewViewportSetting;
+  readonly viewportEnabled: boolean;
+  readonly onViewportChange: (setting: PreviewViewportSetting, remember: boolean) => void;
+  readonly onClose?: () => void;
 }) {
   const url = browserTabUrl(tab);
   const [draft, setDraft] = useState<string | null>(null);
@@ -298,6 +580,9 @@ function BrowserAddressBar({
   };
   return (
     <View className="flex-row items-center gap-1 px-2 pb-2">
+      {onClose ? (
+        <ControlPill icon="xmark" accessibilityLabel="Close browser" onPress={onClose} />
+      ) : null}
       <ControlPill
         icon="chevron.left"
         accessibilityLabel="Back"
@@ -338,6 +623,9 @@ function BrowserAddressBar({
         tab={tab}
         streaming={streaming}
         onPaste={ready ? onPaste : undefined}
+        viewportSetting={viewportSetting}
+        viewportEnabled={viewportEnabled}
+        onViewportChange={onViewportChange}
       />
     </View>
   );

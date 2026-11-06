@@ -23,13 +23,13 @@ async function loadConfig(variant: string | undefined) {
   return (await import("./app.config.ts")).default;
 }
 
-it("isolates the fork Android identity and disables upstream OTA for release builds", async () => {
+it("preserves the original preview identity for fork login and disables upstream OTA", async () => {
   vi.stubEnv("T3CODE_FORK_BUILD", "1");
   vi.stubEnv("T3CODE_MOBILE_UPDATES_ENABLED", "0");
   const config = await loadConfig("preview");
-  expect(config.name).toBe("T3 Shared");
-  expect(config.android?.package).toBe("com.smfeng.t3shared");
-  expect(config.scheme).toBe("t3-shared");
+  expect(config.name).toBe("T3 Code Preview");
+  expect(config.android?.package).toBe("com.t3tools.t3code.preview");
+  expect(config.scheme).toBe("t3code-preview");
   expect(config.updates?.enabled).toBe(false);
 });
 

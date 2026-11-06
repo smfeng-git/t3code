@@ -4,4 +4,5 @@ export interface SheetProps {
   readonly title: string;
   readonly children: ReactNode;
   readonly onClose: () => void;
+  readonly expanded?: boolean;
 }

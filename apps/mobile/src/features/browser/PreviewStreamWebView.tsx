@@ -1,4 +1,8 @@
-import type { PreviewElementPickResult } from "@t3tools/contracts";
+import type {
+  PreviewElementPickResult,
+  PreviewElementSelection,
+  PreviewViewportSetting,
+} from "@t3tools/contracts";
 import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import * as Dialog from "../../components/ui/Dialog";
@@ -35,10 +39,13 @@ import {
   previewStreamDocument,
   previewStreamMessage,
   type PreviewStreamConfiguration,
+  type PreviewLayoutState,
 } from "./preview-stream-document";
 
 export interface PreviewStreamRef {
+  readonly fitToScreen: () => void;
   readonly resetZoom: () => void;
+  readonly highlightElement: (index: number, confirm?: boolean) => void;
   readonly selectElement: (url: string | null) => void;
   readonly command: (input: PreviewStreamInput) => void;
   readonly paste: () => void;
@@ -51,6 +58,11 @@ export interface PreviewPictureInPictureState {
 }
 
 type NativeStreamBridge = {
+  readonly initialViewport?: PreviewViewportSetting;
+  readonly onLayoutState?: (layout: PreviewLayoutState) => void;
+  readonly onSelectionPosition?: (side: "top" | "bottom") => void;
+  readonly onSelectionCleared?: (detail: string) => void;
+  readonly onElementConfirmed?: (selection: PreviewElementSelection) => void;
   readonly onElementPicked?: (result: PreviewElementPickResult) => void;
   readonly ref?: Ref<PreviewStreamRef>;
   readonly onUnauthorized: () => void;
@@ -63,6 +75,7 @@ type NativeStreamBridge = {
   /** True while frames show, so commands reach the page. */
   readonly onStreamingChange?: (streaming: boolean) => void;
   readonly compact?: boolean;
+  readonly hideControlBar?: boolean;
   readonly pdfUri?: string | null;
 };
 
@@ -219,11 +232,17 @@ function PreviewStreamDocumentView({
   configuration,
   background,
   compact,
+  hideControlBar,
   pdfUri,
   onUnauthorized,
   onGone,
   onViewport,
   onElementPicked,
+  onElementConfirmed,
+  initialViewport,
+  onLayoutState,
+  onSelectionPosition,
+  onSelectionCleared,
   onControl,
   onPictureInPicture,
   onStreamingChange,
@@ -243,6 +262,11 @@ function PreviewStreamDocumentView({
   const failed = useRef(false);
   const bootstrapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [status, setStatus] = useState<"connecting" | "streaming" | "error">("connecting");
+  const [initialConfiguration] = useState(() =>
+    JSON.stringify({ ...JSON.parse(configuration), viewport: initialViewport }),
+  );
+  const [layout, setLayout] = useState<PreviewLayoutState | null>(null);
+  const [selecting, setSelecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
   const [hostSetup, setHostSetup] = useState<PreviewStreamHostSetup | null>(null);
@@ -313,12 +337,18 @@ function PreviewStreamDocumentView({
     };
   }, []);
   const source = {
-    html: previewStreamDocument(configuration, previewStreamScript),
+    html: previewStreamDocument(initialConfiguration, previewStreamScript),
     baseUrl: Platform.OS === "android" ? "https://localhost/" : "file:///",
   };
   useImperativeHandle(ref, () => ({
+    fitToScreen: () =>
+      webView.current?.injectJavaScript("window.T3PreviewStream?.fitToScreen(); true;"),
     resetZoom: () =>
       webView.current?.injectJavaScript("window.T3PreviewStream?.resetZoom(); true;"),
+    highlightElement: (index, confirm = false) =>
+      webView.current?.injectJavaScript(
+        `window.T3PreviewStream?.highlightElement(${JSON.stringify(index)}, ${JSON.stringify(confirm)}); true;`,
+      ),
     selectElement: (url) =>
       webView.current?.injectJavaScript(
         `window.T3PreviewStream?.selectElement(${JSON.stringify(url)}); true;`,
@@ -334,7 +364,7 @@ function PreviewStreamDocumentView({
   };
   return (
     <View className="flex-1" style={{ backgroundColor: background }}>
-      {!compact ? (
+      {!compact && !hideControlBar ? (
         <View className="flex-row items-center justify-between gap-2 border-b border-secondary-border px-3 py-2">
           <AppText className="text-xs text-foreground-muted">
             {previewStreamControlLabel(control)}
@@ -378,11 +408,32 @@ function PreviewStreamDocumentView({
             const message = previewStreamMessage(event.nativeEvent.data);
             if (message === null) return;
             switch (message.type) {
+              case "layout":
+                setLayout(message);
+                onLayoutState?.(message);
+                return;
+              case "selectionPosition":
+                onSelectionPosition?.(message.side);
+                return;
+              case "selectionCleared":
+                setSelecting(false);
+                onSelectionCleared?.(message.detail);
+                return;
+              case "selecting":
+                setSelecting(message.active);
+                return;
+              case "elementConfirmed":
+                onElementConfirmed?.(message.selection);
+                return;
               case "elementPicked":
                 onElementPicked?.(message);
                 return;
               case "control": {
                 setControl(message);
+                if (message.controller !== "you") {
+                  setLayout(null);
+                  setSelecting(false);
+                }
                 const previousDialog = dialogRef.current;
                 dialogRef.current = message.dialog;
                 setPromptText((draft) => previewPromptText(previousDialog, message.dialog, draft));
@@ -426,6 +477,8 @@ function PreviewStreamDocumentView({
                 }
                 setStatus(message.status);
                 if (message.status === "connecting") {
+                  setSelecting(false);
+                  setLayout(null);
                   // Dialogs may have closed and reopened while this viewer was disconnected.
                   dialogRef.current = null;
                   setControl(null);
@@ -442,6 +495,25 @@ function PreviewStreamDocumentView({
           </View>
         ) : null}
       </View>
+      {(layout && layout.state !== "ready") || selecting ? (
+        <View className="absolute bottom-3 left-3 right-3 gap-2 rounded-lg bg-sheet p-3">
+          <AppText accessibilityLiveRegion="polite" className="text-sm text-foreground">
+            {selecting
+              ? "Capturing element…"
+              : layout?.state === "pending"
+                ? "Adapting page layout…"
+                : layout?.detail}
+          </AppText>
+          {layout?.state === "error" ? (
+            <Button
+              label="Retry layout"
+              onPress={() =>
+                webView.current?.injectJavaScript("window.T3PreviewStream?.retryLayout(); true;")
+              }
+            />
+          ) : null}
+        </View>
+      ) : null}
       {!compact && fileChooser && control?.controller === "you" ? (
         <View className="absolute inset-x-3 top-16 gap-3 rounded-xl border border-secondary-border bg-secondary p-4">
           <AppText className="text-sm text-secondary-foreground">
@@ -496,7 +568,7 @@ function PreviewStreamDocumentView({
           )}
         </View>
       ) : null}
-      {status !== "streaming" ? (
+      {status === "error" || (status === "connecting" && layout === null) ? (
         <View
           className="absolute inset-0 items-center justify-center gap-4 px-6"
           style={{ backgroundColor: background }}

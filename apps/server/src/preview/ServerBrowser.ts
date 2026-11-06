@@ -1,5 +1,7 @@
 import { PreviewElementPick, type PreviewElementPickResult } from "@t3tools/contracts";
 import { captureElementSelection } from "./captureElementSelection.ts";
+import { PreviewViewportSync, type PreviewViewportSyncResult } from "@t3tools/contracts";
+import { captureAppliedViewport } from "./captureAppliedViewport.ts";
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 // Screencasts ignore emulated device scale; real 2x keeps captures sharp.
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
@@ -102,6 +104,7 @@ const DESKTOP_ATTACH_TIMEOUT = "10 seconds";
 const VIEWER_OUTPUT_LIMIT = 64;
 const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } as const;
 const decodeElementPick = Schema.decodeUnknownSync(PreviewElementPick);
+const decodeViewportSync = Schema.decodeUnknownSync(PreviewViewportSync);
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
@@ -160,6 +163,7 @@ export class ServerBrowserLaunchError extends Schema.TaggedError<ServerBrowserLa
 }
 
 export type ServerBrowserViewerOutput =
+  | ({ readonly _tag: "viewportApplied" } & Omit<PreviewViewportSyncResult, "type">)
   | ({ readonly _tag: "elementPicked" } & Omit<PreviewElementPickResult, "type">)
   | {
       readonly _tag: "frame";
@@ -169,6 +173,7 @@ export type ServerBrowserViewerOutput =
   | { readonly _tag: "viewport"; readonly width: number; readonly height: number }
   | {
       readonly _tag: "control";
+      readonly viewportSync: true;
       readonly canOperate: boolean;
       readonly controller: "agent" | "you" | "another-viewer" | "unclaimed";
       readonly generation: number;
@@ -265,6 +270,7 @@ interface ViewerState {
   scrolledAt: number;
 
   requestedSize: { width: number; height: number; order: number } | null;
+  savedViewport: PreviewViewportSetting | null;
 }
 
 interface EncoderWindow {
@@ -548,6 +554,7 @@ const make = Effect.gen(function* () {
     for (const viewer of tab.viewers)
       viewer.push({
         _tag: "control",
+        viewportSync: true,
         canOperate: viewer.canOperate,
         controller:
           tab.control.controller === viewer.id
@@ -2558,6 +2565,17 @@ const make = Effect.gen(function* () {
       resume: () => startScreencast(screencastScale),
       scrolledAt: 0,
       requestedSize: null,
+      savedViewport: null,
+    };
+    const restoreViewport = async () => {
+      await releaseViewerInput(viewer, session);
+      const setting = viewer.savedViewport;
+      viewer.savedViewport = null;
+      if (!setting || tab.closing) return;
+      await runPromise(
+        manager.resize({ threadId: tab.threadId, tabId: tab.tabId, viewport: setting }),
+      );
+      await applySetting(tab, setting);
     };
     yield* Effect.acquireRelease(
       Effect.sync(() => {
@@ -2566,7 +2584,7 @@ const make = Effect.gen(function* () {
       }),
       () =>
         Effect.promise(async () => {
-          await tab.control.disconnect(viewer.id, () => releaseViewerInput(viewer, session));
+          await tab.control.disconnect(viewer.id, restoreViewport);
           tab.viewers.delete(viewer);
           broadcastControl(tab);
           reportLiveTabs();
@@ -2591,6 +2609,12 @@ const make = Effect.gen(function* () {
     );
     let screencastStarted = false;
     session.on("Page.screencastFrame", (frame) => {
+      if (tab.capturing > 0) {
+        void session
+          .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
+          .catch(constVoid);
+        return;
+      }
       screencastStarted = true;
       if (framesInFlight > 0) mayHaveDropped = true;
       framesInFlight += 1;
@@ -2653,9 +2677,7 @@ const make = Effect.gen(function* () {
               await taking;
               pushFileChooser(tab);
             } else if (message.type === "releaseControl") {
-              const releasing = tab.control.release(viewer.id, () =>
-                releaseViewerInput(viewer, session),
-              );
+              const releasing = tab.control.release(viewer.id, restoreViewport);
               broadcastControl(tab);
               await releasing;
             } else if (
@@ -2669,6 +2691,50 @@ const make = Effect.gen(function* () {
                   ? { promptText: message.promptText }
                   : {}),
               });
+            } else if (message.type === "viewport" && typeof message.requestId === "string") {
+              const requestId = message.requestId.slice(0, 100);
+              try {
+                const request = decodeViewportSync(message);
+                await tab.control.human(viewer.id, () =>
+                  withCaptureLock(tab, async () => {
+                    // Keep background Electron guests painting while discarding transitional frames.
+                    tab.capturing += 1;
+                    try {
+                      if (tab.dialog)
+                        throw new Error("Close the page dialog before adapting its layout.");
+                      const size = fixedViewportSize(request.setting);
+                      if (!size) throw new Error("Choose a fixed size or fit to this device.");
+                      viewer.savedViewport ??= tab.setting;
+                      await runPromise(
+                        manager.resize({
+                          threadId: tab.threadId,
+                          tabId: tab.tabId,
+                          viewport: request.setting,
+                        }),
+                      );
+                      await applySetting(tab, request.setting);
+                      const cssSize = tab.desktop ? size : (await layoutSize(tab))!;
+                      const image = await runPromise(
+                        Effect.tryPromise(() =>
+                          captureAppliedViewport(tab.page, session, cssSize),
+                        ).pipe(Effect.timeout("8 seconds")),
+                      );
+                      if (tab.control.controller !== viewer.id)
+                        throw new Error("Browser control changed.");
+                      viewer.push({ _tag: "viewportApplied", requestId, image, error: null });
+                    } finally {
+                      tab.capturing -= 1;
+                    }
+                  }),
+                );
+              } catch (error) {
+                viewer.push({
+                  _tag: "viewportApplied",
+                  requestId,
+                  image: null,
+                  error: error instanceof Error ? error.message : "Could not apply browser layout.",
+                });
+              }
             } else if (message.type === "pickElement") {
               const pick = decodeElementPick(message);
               try {

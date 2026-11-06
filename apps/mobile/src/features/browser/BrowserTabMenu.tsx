@@ -1,5 +1,8 @@
 import * as Dialog from "../../components/ui/Dialog";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/reactivity";
+import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { parseBrowserViewport, rememberBrowserViewport } from "./browserViewport";
 import type { MenuAction } from "@react-native-menu/menu";
 import {
   DEFAULT_PREVIEW_ZOOM_FACTOR,
@@ -11,7 +14,6 @@ import {
   type PreviewViewportSetting,
 } from "@t3tools/contracts";
 import { PREVIEW_VIEWPORT_PRESETS } from "@t3tools/shared/previewViewport";
-
 import { ControlPill } from "../../components/ui/ControlPill";
 import { Menu } from "../../components/ui/Menu";
 import { previewEnvironment } from "../../state/preview";
@@ -24,18 +26,34 @@ const APPEARANCES = [
 ] as const;
 
 const VIEWPORTS = [
-  { id: "fill", title: "Fit to screen", setting: FILL_PREVIEW_VIEWPORT },
-  ...(["Phone", "Tablet", "Desktop"] as const).flatMap((category) => {
-    const preset = PREVIEW_VIEWPORT_PRESETS.find((candidate) => candidate.category === category);
-    if (!preset) return [];
-    const setting: PreviewViewportSetting = {
+  { id: "fill", title: "Auto-fit layout", setting: FILL_PREVIEW_VIEWPORT },
+  ...PREVIEW_VIEWPORT_PRESETS.map((preset) => ({
+    id: `preset:${preset.id}`,
+    title: `${preset.label} (${preset.detail})`,
+    setting: {
       _tag: "preset",
       presetId: preset.id,
       width: preset.width,
       height: preset.height,
-    };
-    return [{ id: `preset:${preset.id}`, title: `${category} (${preset.label})`, setting }];
-  }),
+    } satisfies PreviewViewportSetting,
+  })),
+  ...(
+    [
+      [1280, 720],
+      [1280, 800],
+      [1366, 768],
+      [1440, 900],
+      [1536, 864],
+      [1920, 1080],
+      [1920, 1200],
+      [2560, 1440],
+      [3840, 2160],
+    ] as const
+  ).map(([width, height]) => ({
+    id: `desktop:${width}x${height}`,
+    title: `Desktop (${width} × ${height})`,
+    setting: { _tag: "freeform", width, height } satisfies PreviewViewportSetting,
+  })),
 ];
 
 export function BrowserTabMenu({
@@ -43,12 +61,24 @@ export function BrowserTabMenu({
   tab,
   streaming,
   onPaste,
+  onViewportChange,
+  viewportSetting,
+  viewportEnabled = true,
 }: {
   readonly environmentId: EnvironmentId;
   readonly tab: PreviewSessionSnapshot;
   readonly streaming: boolean;
   readonly onPaste?: () => void;
+  readonly onViewportChange?: (setting: PreviewViewportSetting, remember: boolean) => void;
+  readonly viewportSetting?: PreviewViewportSetting;
+  readonly viewportEnabled?: boolean;
 }) {
+  const viewport = viewportSetting ?? tab.viewport;
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const updatePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const recent = AsyncResult.isSuccess(preferences)
+    ? (preferences.value.browserRecentViewports ?? [])
+    : [];
   const adjust = useAtomCommand(previewEnvironment.adjust, "browser tab change");
   const resize = useAtomCommand(previewEnvironment.resize, "browser viewport change");
   const close = useAtomCommand(previewEnvironment.close, "browser tab close");
@@ -61,12 +91,54 @@ export function BrowserTabMenu({
     PREVIEW_ZOOM_LEVELS[
       Math.min(Math.max((zoomIndex < 0 ? 7 : zoomIndex) + step, 0), PREVIEW_ZOOM_LEVELS.length - 1)
     ]!;
-  const viewportId =
-    tab.viewport === undefined || tab.viewport._tag === "fill"
-      ? "fill"
-      : tab.viewport._tag === "preset"
-        ? `preset:${tab.viewport.presetId}`
-        : "custom";
+  const viewportOptions = [
+    ...recent.map((size, index) => ({
+      id: `recent:${index}`,
+      title: `Recent (${size.width} × ${size.height})`,
+      setting: { _tag: "freeform", ...size } satisfies PreviewViewportSetting,
+    })),
+    ...VIEWPORTS,
+  ];
+  const applyViewport = (setting: PreviewViewportSetting, remember = false) => {
+    if (!viewportEnabled) return;
+    if (onViewportChange) onViewportChange(setting, remember);
+    else
+      void resize({ environmentId, input: { ...target, viewport: setting } }).then((result) => {
+        if (result._tag === "Failure") Dialog.alert("Could not change the viewport");
+        else if (remember && setting._tag === "freeform")
+          updatePreferences({
+            transform: (current) => ({
+              browserRecentViewports: rememberBrowserViewport(
+                current.browserRecentViewports ?? [],
+                {
+                  width: setting.width,
+                  height: setting.height,
+                },
+              ),
+            }),
+          });
+      });
+  };
+  const customViewport = (initialValue: string) =>
+    Dialog.prompt({
+      title: "Custom viewport",
+      message:
+        "Width × height in CSS pixels (240–3840 each, up to 3840 × 2160 total). This changes the shared PC page layout.",
+      initialValue,
+      placeholder: "1440 × 900",
+      confirmText: "Apply",
+      onConfirm: (value) => {
+        const size = parseBrowserViewport(value);
+        if (!size) {
+          Dialog.alert("Invalid size", "Enter width × height within the limits.", [
+            { text: "Try again", onPress: () => customViewport(value) },
+            { text: "Cancel", style: "cancel" },
+          ]);
+          return;
+        }
+        applyViewport({ _tag: "freeform", ...size }, true);
+      },
+    });
 
   const closeAction: MenuAction = {
     id: "close",
@@ -89,7 +161,7 @@ export function BrowserTabMenu({
     },
     {
       id: "zoom",
-      title: `Zoom (${Math.round(zoomFactor * 100)}%)`,
+      title: `Page zoom (${Math.round(zoomFactor * 100)}%)`,
       image: "plus.magnifyingglass",
       subactions: [
         { id: "zoom:in", title: "Zoom in", image: "plus.magnifyingglass" },
@@ -99,13 +171,34 @@ export function BrowserTabMenu({
     },
     {
       id: "viewport",
-      title: "Viewport",
+      attributes: { disabled: !viewportEnabled },
+      title:
+        viewport && viewport._tag !== "fill"
+          ? `Fixed layout (${viewport.width} × ${viewport.height})`
+          : "Auto-fit layout",
       image: "rectangle.and.arrow.up.right.and.arrow.down.left",
-      subactions: VIEWPORTS.map((option) => ({
-        id: `viewport:${option.id}`,
-        title: option.title,
-        state: option.id === viewportId ? "on" : "off",
-      })),
+      subactions: [
+        { id: "viewport-custom", title: "Custom size…" },
+        {
+          id: "viewport-swap",
+          title: "Swap width and height",
+          attributes: { disabled: !viewport || viewport._tag === "fill" },
+        },
+        ...viewportOptions.map((option): MenuAction => ({
+          id: `viewport:${option.id}`,
+          title: option.title,
+          state: (
+            option.setting._tag === "fill"
+              ? !viewport || viewport._tag === "fill"
+              : viewport &&
+                viewport._tag !== "fill" &&
+                viewport.width === option.setting.width &&
+                viewport.height === option.setting.height
+          )
+            ? "on"
+            : "off",
+        })),
+      ],
     },
     {
       id: "site-data",
@@ -131,6 +224,16 @@ export function BrowserTabMenu({
       });
       return;
     }
+    if (id === "viewport-custom") {
+      const size = viewport && viewport._tag !== "fill" ? viewport : recent[0];
+      customViewport(size ? `${size.width} × ${size.height}` : "1440 × 900");
+      return;
+    }
+    if (id === "viewport-swap") {
+      if (viewport && viewport._tag !== "fill")
+        applyViewport({ _tag: "freeform", width: viewport.height, height: viewport.width }, true);
+      return;
+    }
     if (id === "paste") return onPaste?.();
     if (id === "hard-reload") return void run({ hardReload: true });
     if (id === "zoom:in") return void run({ zoomFactor: zoomTo(1) });
@@ -144,13 +247,9 @@ export function BrowserTabMenu({
       return;
     }
     if (id.startsWith("viewport:")) {
-      const option = VIEWPORTS.find((candidate) => `viewport:${candidate.id}` === id);
+      const option = viewportOptions.find((candidate) => `viewport:${candidate.id}` === id);
       if (!option) return;
-      void resize({ environmentId, input: { ...target, viewport: option.setting } }).then(
-        (result) => {
-          if (result._tag === "Failure") Dialog.alert("Could not change the viewport");
-        },
-      );
+      applyViewport(option.setting, id.startsWith("viewport:recent:"));
     }
   };
 

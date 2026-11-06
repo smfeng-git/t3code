@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { ElementContextDetails } from "./composerContext.ts";
 
-export const PreviewElementSelection = Schema.Struct({
+const PreviewElementCandidate = Schema.Struct({
   element: ElementContextDetails,
   rect: Schema.Struct({
     x: Schema.Number,
@@ -9,6 +9,11 @@ export const PreviewElementSelection = Schema.Struct({
     width: Schema.Number,
     height: Schema.Number,
   }),
+});
+
+export const PreviewElementSelection = Schema.Struct({
+  ...PreviewElementCandidate.fields,
+  ancestors: Schema.optional(Schema.Array(PreviewElementCandidate).check(Schema.isMaxLength(6))),
   viewport: Schema.Struct({ width: Schema.Number, height: Schema.Number }),
   screenshot: Schema.String,
 });

@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import { captureElementSelection } from "./captureElementSelection.ts";
+import { captureAppliedViewport } from "./captureAppliedViewport.ts";
 
 describe("server browser element refs", () => {
   let browser: Browser;
@@ -35,6 +36,36 @@ describe("server browser element refs", () => {
     expect(picked.element.selector).toBe("#target");
     expect(picked.rect).toEqual({ x: 20, y: 30, width: 100, height: 40 });
     expect(picked.screenshot).toMatch(/^data:image\/jpeg;base64,/);
+    expect(await page.locator("#target").count()).toBe(1);
+    await page.setContent(
+      '<section id="card"><button id="button"><span id="label">Save</span></button></section>',
+    );
+    const bounds = await page.locator("#label").boundingBox();
+    const nested = await captureElementSelection(page, cdp, {
+      x: bounds!.x + 2,
+      y: bounds!.y + 2,
+      pageUrl: page.url(),
+    });
+    expect(nested.element.selector).toBe("#label");
+    expect(nested.ancestors?.map((entry) => entry.element.selector)).toEqual(["#button", "#card"]);
+    await page.setContent(
+      '<button id="target" style="position:fixed;left:20px;top:30px;width:100px;height:40px">Save</button>',
+    );
+    await page.evaluate(`window.__t3PreviewCaptureElement = async () => ({
+      pageUrl: location.href, pageTitle: 'Shared picker', tagName: 'button',
+      selector: '#target', htmlPreview: '<button>Save</button>',
+      componentName: 'SaveButton', source: null, styles: 'color: red'
+    })`);
+    const enriched = await captureElementSelection(page, cdp, {
+      x: 25,
+      y: 35,
+      pageUrl: page.url(),
+    });
+    expect(enriched.element).toMatchObject({ componentName: "SaveButton", styles: "color: red" });
+    await page.setViewportSize({ width: 800, height: 400 });
+    const landscape = await captureAppliedViewport(page, cdp, { width: 800, height: 400 });
+    expect(landscape).toMatchObject({ width: 800, height: 400 });
+    expect(landscape.screenshot).toMatch(/^data:image\/jpeg;base64,/);
     expect(await page.locator("#target").count()).toBe(1);
     await expect(
       captureElementSelection(page, cdp, { x: 25, y: 35, pageUrl: "https://old.test" }),
