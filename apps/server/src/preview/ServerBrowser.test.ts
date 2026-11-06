@@ -818,6 +818,13 @@ it.live("streams to a read-only viewer without allowing takeover, input, or view
         { type: "takeControl" },
         { type: "key", action: "down", key: "a", text: "a" },
         { type: "resize", width: 390, height: 844 },
+        {
+          type: "pickElement",
+          requestId: "readonly",
+          x: 10,
+          y: 10,
+          pageUrl: "http://localhost:5173",
+        },
         { type: "viewport", setting: { _tag: "freeform", width: 390, height: 844 } },
       ])
         yield* viewer.input(message);
@@ -828,6 +835,7 @@ it.live("streams to a read-only viewer without allowing takeover, input, or view
         expect.objectContaining({ _tag: "frame", data: Buffer.from("frame") }),
       );
       expect(outputs).toContainEqual(expect.objectContaining({ _tag: "viewport" }));
+      expect(outputs.some((output) => output._tag === "elementPicked")).toBe(false);
       expect(outputs).toContainEqual(
         expect.objectContaining({ _tag: "control", canOperate: false, controller: "agent" }),
       );

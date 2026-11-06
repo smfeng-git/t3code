@@ -1,3 +1,8 @@
+import { useWindowDimensions } from "react-native";
+import type { PreviewElementSelection } from "@t3tools/contracts";
+import { Button } from "../../components/ui/Button";
+import { setBrowserOrientation } from "./browserOrientation";
+import { BrowserAnnotationSheet } from "./BrowserAnnotationSheet";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import * as Dialog from "../../components/ui/Dialog";
@@ -86,6 +91,17 @@ function BrowserPreviewScreen({
   const [streaming, setStreaming] = useState(false);
   const [canControl, setCanControl] = useState(false);
   const streamRef = useRef<PreviewStreamRef>(null);
+  const dimensions = useWindowDimensions();
+  const [pickScope, setPickScope] = useState<string | null>(null);
+  const [selection, setSelection] = useState<PreviewElementSelection | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns native orientation only while the browser route is focused
+  useEffect(() => {
+    if (!focused || Platform.OS !== "android") return;
+    void setBrowserOrientation("auto").catch(() => {});
+    return () => {
+      void setBrowserOrientation("restore").catch(() => {});
+    };
+  }, [focused]);
   const { tabs, loaded } = useThreadServerBrowserTabs({ environmentId, threadId, enabled: true });
   const tab = tabs.find((entry) => entry.tabId === selectedTabId) ?? latestBrowserTab(tabs);
   const pdfUri =
@@ -104,10 +120,21 @@ function BrowserPreviewScreen({
     if (detail) Dialog.alert("Picture in picture is unavailable", detail);
   };
   const selectTab = (next: string) => {
+    streamRef.current?.selectElement(null);
+    setPicking(false);
     setPictureInPicture(NO_PICTURE_IN_PICTURE);
     setSelectedTabId(next);
   };
   const live = (focused && foreground) || pictureInPicture.active;
+  const pageUrl = tab ? browserTabUrl(tab) : "";
+  const selectionScope = `${tabId}:${pageUrl}:${canControl}:${live}`;
+  const picking = pickScope === selectionScope;
+  const setPicking = (active: boolean) => setPickScope(active ? selectionScope : null);
+  if (pickScope !== null && pickScope !== selectionScope) setPickScope(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- synchronizes selection mode with the WebView and cancels stale requests
+  useEffect(() => {
+    streamRef.current?.selectElement(picking ? pageUrl : null);
+  }, [picking, pageUrl, streamRef]);
 
   return (
     <View className="flex-1 bg-sheet" style={{ paddingBottom: insets.bottom }}>
@@ -160,6 +187,17 @@ function BrowserPreviewScreen({
           accessibilityLabel="Close browser"
         />
       ) : null}
+      {selection ? (
+        <BrowserAnnotationSheet
+          selection={selection}
+          draftKey={`${environmentId}:${threadId}`}
+          onClose={() => setSelection(null)}
+          onAdded={() => {
+            setSelection(null);
+            onClose();
+          }}
+        />
+      ) : null}
       {tab ? (
         <>
           <BrowserAddressBar
@@ -171,6 +209,29 @@ function BrowserPreviewScreen({
             onCommand={(input) => streamRef.current?.command(input)}
             onPaste={() => streamRef.current?.paste()}
           />
+          <View className="flex-row flex-wrap gap-2 px-2 pb-2">
+            {Platform.OS === "android" ? (
+              <Button
+                size="compact"
+                label="Rotate"
+                onPress={() => {
+                  void setBrowserOrientation(
+                    dimensions.width > dimensions.height ? "portrait" : "landscape",
+                  ).catch((error: unknown) => Dialog.alert("Could not rotate", String(error)));
+                }}
+              />
+            ) : null}
+            <Button size="compact" label="Fit" onPress={() => streamRef.current?.resetZoom()} />
+            <Button
+              size="compact"
+              label={picking ? "Cancel selection" : "Annotate"}
+              disabled={!streaming || !canControl || pdfUri !== null}
+              onPress={() => {
+                streamRef.current?.selectElement(picking ? null : pageUrl);
+                setPicking(!picking);
+              }}
+            />
+          </View>
           {live ? (
             <PreviewStreamWebView
               key={`stream:${tab.tabId}`}
@@ -182,6 +243,15 @@ function BrowserPreviewScreen({
               interactive
               background={themeVariables["--color-sheet-solid"]}
               onPictureInPicture={onPictureInPicture}
+              onElementPicked={(result) => {
+                if (result.error) {
+                  Dialog.alert("Could not select element", result.error);
+                  return;
+                }
+                streamRef.current?.selectElement(null);
+                setPicking(false);
+                setSelection(result.selection);
+              }}
               onStreamingChange={setStreaming}
               onControl={(control) => setCanControl(control?.controller === "you")}
             />

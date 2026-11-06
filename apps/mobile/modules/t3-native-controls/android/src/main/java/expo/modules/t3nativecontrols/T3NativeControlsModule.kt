@@ -1,9 +1,11 @@
 package expo.modules.t3nativecontrols
 
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.text.format.DateFormat
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.Promise
+import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
@@ -15,6 +17,20 @@ class T3NativeControlsModule : Module() {
   @Suppress("TooGenericExceptionCaught") // Clear the pending promise before rethrowing.
   override fun definition() = ModuleDefinition {
     Name("T3NativeControls")
+
+    AsyncFunction("setBrowserOrientation") { mode: String ->
+      require(mode in listOf("auto", "portrait", "landscape", "restore"))
+      val activity = appContext.currentActivity ?: error("The app is not active.")
+      if (mode == "restore") activity.intent.removeExtra("t3BrowserOrientation")
+      else activity.intent.putExtra("t3BrowserOrientation", mode)
+      activity.requestedOrientation = when (mode) {
+        "auto" -> ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+        "landscape" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        "portrait" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        else -> if (activity.resources.configuration.smallestScreenWidthDp >= 600)
+          ActivityInfo.SCREEN_ORIENTATION_FULL_USER else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+      }
+    }.runOnQueue(Queues.MAIN)
 
     Function("is24HourFormat") {
       val context = appContext.reactContext ?: error("The app is not active.")

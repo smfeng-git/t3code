@@ -155,6 +155,7 @@ const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBr
               // Never sent, but Chromium still waits for its ack.
               return superseded ? Effect.forkScoped(superseded.ack) : Effect.void;
             }
+            case "elementPicked":
             case "viewport":
             case "control":
             case "clipboard":

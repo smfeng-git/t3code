@@ -8,6 +8,7 @@ import {
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
+import { captureElementSelection } from "./captureElementSelection.ts";
 
 describe("server browser element refs", () => {
   let browser: Browser;
@@ -25,6 +26,22 @@ describe("server browser element refs", () => {
     context = await browser.newContext();
     page = await context.newPage();
     cdp = await context.newCDPSession(page);
+  });
+  it("captures a selected element without clicking and rejects a stale page", async () => {
+    await page.setContent(
+      '<button id="target" onclick="this.remove()" style="position:fixed;left:20px;top:30px;width:100px;height:40px">Save</button>',
+    );
+    const picked = await captureElementSelection(page, cdp, { x: 25, y: 35, pageUrl: page.url() });
+    expect(picked.element.selector).toBe("#target");
+    expect(picked.rect).toEqual({ x: 20, y: 30, width: 100, height: 40 });
+    expect(picked.screenshot).toMatch(/^data:image\/jpeg;base64,/);
+    expect(await page.locator("#target").count()).toBe(1);
+    await expect(
+      captureElementSelection(page, cdp, { x: 25, y: 35, pageUrl: "https://old.test" }),
+    ).rejects.toThrow("page changed");
+    await expect(
+      captureElementSelection(page, cdp, { x: 400, y: 400, pageUrl: page.url() }),
+    ).rejects.toThrow("No selectable element");
   });
   afterEach(async () => {
     await context.close();

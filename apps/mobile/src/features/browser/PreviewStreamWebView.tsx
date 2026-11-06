@@ -1,3 +1,4 @@
+import type { PreviewElementPickResult } from "@t3tools/contracts";
 import { Button } from "../../components/ui/Button";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import * as Dialog from "../../components/ui/Dialog";
@@ -37,6 +38,8 @@ import {
 } from "./preview-stream-document";
 
 export interface PreviewStreamRef {
+  readonly resetZoom: () => void;
+  readonly selectElement: (url: string | null) => void;
   readonly command: (input: PreviewStreamInput) => void;
   readonly paste: () => void;
   readonly togglePictureInPicture: () => void;
@@ -48,6 +51,7 @@ export interface PreviewPictureInPictureState {
 }
 
 type NativeStreamBridge = {
+  readonly onElementPicked?: (result: PreviewElementPickResult) => void;
   readonly ref?: Ref<PreviewStreamRef>;
   readonly onUnauthorized: () => void;
   /** Asks for fresh access after a refusal, once `delayMs` has passed. */
@@ -219,6 +223,7 @@ function PreviewStreamDocumentView({
   onUnauthorized,
   onGone,
   onViewport,
+  onElementPicked,
   onControl,
   onPictureInPicture,
   onStreamingChange,
@@ -312,6 +317,12 @@ function PreviewStreamDocumentView({
     baseUrl: Platform.OS === "android" ? "https://localhost/" : "file:///",
   };
   useImperativeHandle(ref, () => ({
+    resetZoom: () =>
+      webView.current?.injectJavaScript("window.T3PreviewStream?.resetZoom(); true;"),
+    selectElement: (url) =>
+      webView.current?.injectJavaScript(
+        `window.T3PreviewStream?.selectElement(${JSON.stringify(url)}); true;`,
+      ),
     command,
     paste,
     togglePictureInPicture: () =>
@@ -367,6 +378,9 @@ function PreviewStreamDocumentView({
             const message = previewStreamMessage(event.nativeEvent.data);
             if (message === null) return;
             switch (message.type) {
+              case "elementPicked":
+                onElementPicked?.(message);
+                return;
               case "control": {
                 setControl(message);
                 const previousDialog = dialogRef.current;

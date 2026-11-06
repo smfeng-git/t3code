@@ -1,3 +1,4 @@
+import type { PreviewElementPickResult } from "@t3tools/contracts";
 import type { DeviceHubAccess } from "@t3tools/client-runtime/device/hub-access";
 import type { PreviewStreamHostSetup } from "@t3tools/contracts";
 import type {
@@ -15,6 +16,7 @@ export interface PreviewStreamConfiguration {
 }
 
 export type PreviewStreamMessage =
+  | PreviewElementPickResult
   | ({ readonly type: "control" } & PreviewStreamControl)
   | {
       readonly type: "status";

@@ -1,3 +1,4 @@
+import type { PreviewElementPickResult, PreviewElementPick } from "@t3tools/contracts";
 // @effect-diagnostics globalTimers:off globalFetch:off - This browser and WebView transport runs without an Effect runtime.
 import { type DeviceHubAccess, withDeviceHubQuery } from "../device/hubAccess.ts";
 import {
@@ -51,6 +52,7 @@ const isPreviewStreamDialog = (value: unknown): value is PreviewStreamControl["d
 
 /** Coordinates are page CSS px. */
 export type PreviewStreamInput =
+  | PreviewElementPick
   | { readonly type: "takeControl" }
   | { readonly type: "releaseControl" }
   | { readonly type: "dialog"; readonly accept: boolean; readonly promptText?: string }
@@ -183,6 +185,7 @@ export interface PreviewStreamTarget {
 }
 
 export interface PreviewStreamEvents {
+  readonly onElementPicked?: (result: PreviewElementPickResult) => void;
   readonly onFrame: (jpeg: ArrayBuffer) => void;
   readonly onViewport: (viewport: PreviewStreamViewport) => void;
   readonly onProbe?: (probe: PreviewStreamProbe) => void;
@@ -204,6 +207,38 @@ export interface PreviewStreamClient {
   readonly stop: () => void;
 }
 
+const isElementPickResult = (value: object): value is PreviewElementPickResult => {
+  const result = value as Partial<PreviewElementPickResult>;
+  if (
+    result.type !== "elementPicked" ||
+    typeof result.requestId !== "string" ||
+    !(result.error === null || typeof result.error === "string")
+  )
+    return false;
+  if (result.selection === null) return true;
+  const selection = result.selection;
+  return (
+    !!selection &&
+    typeof selection.screenshot === "string" &&
+    selection.screenshot.startsWith("data:image/jpeg;base64,") &&
+    !!selection.element &&
+    typeof selection.element.pageUrl === "string" &&
+    typeof selection.element.tagName === "string" &&
+    typeof selection.element.htmlPreview === "string" &&
+    !!selection.rect &&
+    !!selection.viewport &&
+    [
+      selection.rect.x,
+      selection.rect.y,
+      selection.rect.width,
+      selection.rect.height,
+      selection.viewport.width,
+      selection.viewport.height,
+    ].every(Number.isFinite) &&
+    selection.viewport.width > 0 &&
+    selection.viewport.height > 0
+  );
+};
 const ACK_MESSAGE = JSON.stringify({ type: "ack" });
 export function createPreviewStreamClient(
   target: PreviewStreamTarget,
@@ -258,6 +293,10 @@ export function createPreviewStreamClient(
         return;
       }
       if (typeof message !== "object" || message === null) return;
+      if (isElementPickResult(message)) {
+        events.onElementPicked?.(message);
+        return;
+      }
       const {
         type,
         x,

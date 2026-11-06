@@ -1,3 +1,5 @@
+import { PreviewElementPick, type PreviewElementPickResult } from "@t3tools/contracts";
+import { captureElementSelection } from "./captureElementSelection.ts";
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 // Screencasts ignore emulated device scale; real 2x keeps captures sharp.
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
@@ -99,6 +101,7 @@ const HOST_RECONNECT_DELAY = "1 second";
 const DESKTOP_ATTACH_TIMEOUT = "10 seconds";
 const VIEWER_OUTPUT_LIMIT = 64;
 const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } as const;
+const decodeElementPick = Schema.decodeUnknownSync(PreviewElementPick);
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
@@ -157,6 +160,7 @@ export class ServerBrowserLaunchError extends Schema.TaggedError<ServerBrowserLa
 }
 
 export type ServerBrowserViewerOutput =
+  | ({ readonly _tag: "elementPicked" } & Omit<PreviewElementPickResult, "type">)
   | {
       readonly _tag: "frame";
       readonly data: Uint8Array;
@@ -2665,6 +2669,28 @@ const make = Effect.gen(function* () {
                   ? { promptText: message.promptText }
                   : {}),
               });
+            } else if (message.type === "pickElement") {
+              const pick = decodeElementPick(message);
+              try {
+                const selection = await tab.control.human(viewer.id, () =>
+                  withCaptureLock(tab, () => captureElementSelection(tab.page, session, pick)),
+                );
+                if (tab.control.controller !== viewer.id)
+                  throw new Error("Browser control changed. Select again.");
+                viewer.push({
+                  _tag: "elementPicked",
+                  requestId: pick.requestId,
+                  selection,
+                  error: null,
+                });
+              } catch (error) {
+                viewer.push({
+                  _tag: "elementPicked",
+                  requestId: pick.requestId,
+                  selection: null,
+                  error: error instanceof Error ? error.message : "Could not select this element.",
+                });
+              }
             } else {
               const dispatch = (input: Record<string, unknown>) =>
                 dispatchViewerInput(tab, session, viewer, input);

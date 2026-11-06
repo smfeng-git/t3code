@@ -87,7 +87,7 @@ async function prepareStreamScripts() {
       ],
       [
         "apps/mobile/src/features/browser",
-        ["preview-stream.browser.ts"],
+        ["preview-stream.browser.ts", "previewTransform.ts"],
         generatePreviewStreamScript,
       ],
       ["packages/client-runtime/src/device", ["stream.ts", "hubAccess.ts"], generateAll],

@@ -1,4 +1,8 @@
 // @effect-diagnostics globalDate:off globalTimers:off - This isolated Electron preload does not run inside an Effect runtime.
+import {
+  pickFromPoint as findPreviewElement,
+  visibleElementRect as previewElementRect,
+} from "@t3tools/shared/previewElement";
 import { ipcRenderer } from "electron";
 import { getElementContext } from "react-grab/primitives";
 import type {
@@ -262,14 +266,11 @@ function isAnnotationNode(element: Element): boolean {
   return element instanceof Element && element.closest(`[${OVERLAY_ATTRIBUTE}]`) !== null;
 }
 
-function pickFromPoint(clientX: number, clientY: number): Element | null {
-  for (const candidate of document.elementsFromPoint(clientX, clientY)) {
-    if (!(candidate instanceof Element)) continue;
-    if (isAnnotationNode(candidate) || candidate.hasAttribute(INPUT_LAYER_ATTRIBUTE)) continue;
-    if (candidate === document.documentElement || candidate === document.body) continue;
-    return candidate;
-  }
-  return null;
+function pickFromPoint(x: number, y: number): Element | null {
+  return findPreviewElement(x, y, document);
+}
+function visibleElementRect(element: Element): PreviewAnnotationRect {
+  return previewElementRect(element, document, (node) => getComputedStyle(node as Element));
 }
 
 function describeRawElement(element: Element): string {
@@ -313,32 +314,6 @@ function positionBox(node: HTMLElement, rect: PreviewAnnotationRect): void {
   node.style.transform = `translate(${rect.x}px, ${rect.y}px)`;
   node.style.width = `${rect.width}px`;
   node.style.height = `${rect.height}px`;
-}
-
-function visibleElementRect(element: Element): PreviewAnnotationRect {
-  const rect = element.getBoundingClientRect();
-  let left = Math.max(0, rect.left);
-  let top = Math.max(0, rect.top);
-  let right = Math.min(document.documentElement.clientWidth, rect.right);
-  let bottom = Math.min(document.documentElement.clientHeight, rect.bottom);
-  if (getComputedStyle(element).position !== "fixed") {
-    for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
-      if (ancestor === document.body || ancestor === document.documentElement) break;
-      const style = getComputedStyle(ancestor);
-      const bounds = ancestor.getBoundingClientRect();
-      const clipLeft = bounds.left + ancestor.clientLeft;
-      const clipTop = bounds.top + ancestor.clientTop;
-      if (style.overflowX !== "visible") {
-        left = Math.max(left, clipLeft);
-        right = Math.min(right, clipLeft + ancestor.clientWidth);
-      }
-      if (style.overflowY !== "visible") {
-        top = Math.max(top, clipTop);
-        bottom = Math.min(bottom, clipTop + ancestor.clientHeight);
-      }
-    }
-  }
-  return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
 }
 
 function createLabel(): HTMLDivElement {

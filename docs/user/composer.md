@@ -292,6 +292,12 @@ its brief details. Select a terminal excerpt to open its captured output, or sel
 comment, picked element, or preview annotation to open its full details. Chips read as "Terminal
 excerpt, Terminal 1 lines 3-4" and similar to screen readers.
 
+On Android, open a thread's browser full screen to rotate it or pinch with two fingers to
+magnify and move the view without changing the remote page's layout. Choose **Annotate** while
+you have browser control, then tap an element and describe the change. **Add to chat** attaches
+the captured page, highlighted element, and comment to the current draft; review it before sending.
+Cancel selection to return to normal page interaction. Browser rotation requires an updated Android app.
+
 A pull request appears as its icon and number. Its color reflects whether it was open, draft,
 merged, or closed when it was attached. Select it to inspect the captured title and branches,
 then choose **Open pull request** to visit the pull request. On web and desktop, type `#` to browse the newest

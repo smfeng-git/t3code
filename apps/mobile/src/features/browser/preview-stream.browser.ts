@@ -1,3 +1,4 @@
+import { fitPreviewTransform, pinchPreviewTransform } from "./previewTransform";
 import {
   createPreviewFramePainter,
   createPreviewStreamClient,
@@ -43,6 +44,8 @@ const AGENT_CURSOR_SVG =
   '<svg width="20" height="20" viewBox="0 0 24 24" fill="#fff" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"/></svg>';
 
 interface Viewer {
+  readonly resetZoom: () => void;
+  readonly selectElement: (url: string | null) => void;
   readonly stop: () => void;
   readonly command: (input: PreviewStreamInput) => void;
   readonly togglePictureInPicture: () => void;
@@ -57,6 +60,13 @@ export function stop() {
 
 export function command(input: PreviewStreamInput) {
   activeViewer?.command(input);
+}
+
+export function resetZoom() {
+  activeViewer?.resetZoom();
+}
+export function selectElement(url: string | null) {
+  activeViewer?.selectElement(url);
 }
 
 export function pictureInPicture() {
@@ -79,7 +89,10 @@ export function start(configuration: PreviewStreamConfiguration) {
   agentCursor.className = "agent-cursor";
   agentCursor.setAttribute("aria-hidden", "true");
   agentCursor.innerHTML = AGENT_CURSOR_SVG;
-  container.append(canvas, agentCursor);
+  const surface = document.createElement("div");
+  surface.style.cssText = "position:absolute;inset:0;transform-origin:0 0";
+  surface.append(canvas, agentCursor);
+  container.append(surface);
   const input = document.createElement("textarea");
   input.setAttribute("aria-label", "Browser page input");
   input.autocapitalize = "off";
@@ -89,6 +102,37 @@ export function start(configuration: PreviewStreamConfiguration) {
   input.disabled = true;
   document.body.replaceChildren(container, ...(interactive ? [input] : []));
 
+  let transform = fitPreviewTransform;
+  let pickUrl: string | null = null;
+  let pickRequest: string | null = null;
+  let pickTimer: ReturnType<typeof setTimeout> | null = null;
+  let requestSequence = 0;
+  let pickGeneration = 0;
+  const fingers = new Map<number, { x: number; y: number }>();
+  let pinching = false;
+  let lastPinch: { x: number; y: number; distance: number } | null = null;
+  const applyTransform = () => {
+    surface.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
+  };
+  const resetZoom = () => {
+    transform = fitPreviewTransform;
+    applyTransform();
+  };
+  const cancelPick = () => {
+    pickGeneration++;
+    pickRequest = null;
+    if (pickTimer !== null) clearTimeout(pickTimer);
+    pickTimer = null;
+  };
+  const pinchPoints = () => {
+    const [a, b] = [...fingers.values()];
+    if (!a || !b) return null;
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, distance: Math.hypot(b.x - a.x, b.y - a.y) };
+  };
+  const fingerPosition = (event: PointerEvent) => {
+    const rect = container.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
   let stopped = false;
   let streaming = false;
   let viewport: PreviewStreamViewport | null = null;
@@ -147,6 +191,7 @@ export function start(configuration: PreviewStreamConfiguration) {
     pendingWheel = pendingMouse = null;
     mouseButtons = 0;
     Object.assign(mouseClicks, { left: 1, middle: 1, right: 1, none: 1 });
+    cancelPick();
     probe = probeCache = touch = lastTap = null;
     keySent = false;
     input.value = SENTINEL;
@@ -171,6 +216,46 @@ export function start(configuration: PreviewStreamConfiguration) {
       },
       {
         onFrame: (jpeg) => painter.paint(jpeg),
+        onElementPicked: (result) => {
+          if (result.requestId !== pickRequest) return;
+          cancelPick();
+          if (!result.selection) {
+            post(result);
+            return;
+          }
+          const selection = result.selection;
+          const generation = pickGeneration;
+          const image = new Image();
+          image.onload = () => {
+            if (stopped || !pickUrl || generation !== pickGeneration) return;
+            const marked = document.createElement("canvas");
+            marked.width = image.naturalWidth;
+            marked.height = image.naturalHeight;
+            const context = marked.getContext("2d");
+            if (!context) {
+              post({ ...result, selection: null, error: "Could not draw selection." });
+              return;
+            }
+            context.drawImage(image, 0, 0);
+            context.scale(
+              marked.width / selection.viewport.width,
+              marked.height / selection.viewport.height,
+            );
+            context.strokeStyle = "#2563eb";
+            context.lineWidth = 3;
+            const { x, y, width, height } = selection.rect;
+            context.strokeRect(x, y, width, height);
+            post({
+              ...result,
+              selection: { ...selection, screenshot: marked.toDataURL("image/jpeg", 0.9) },
+            });
+          };
+          image.onerror = () => {
+            if (!stopped && pickUrl && generation === pickGeneration)
+              post({ ...result, selection: null, error: "Could not load selection screenshot." });
+          };
+          image.src = selection.screenshot;
+        },
         onPointer: showAgentCursor,
         onClipboard: (text) => post({ type: "clipboard", text }),
         onDownload: (download) => post({ type: "download", ...download }),
@@ -236,6 +321,7 @@ export function start(configuration: PreviewStreamConfiguration) {
     const next = { width: Math.round(rect.width), height: Math.round(rect.height) };
     if (size?.width === next.width && size.height === next.height) return;
     size = next;
+    resetZoom();
     if (interactive) send({ type: "resize", ...next });
     const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
     const side = Math.max(next.width, next.height);
@@ -361,11 +447,51 @@ export function start(configuration: PreviewStreamConfiguration) {
     clickCount,
     modifiers: previewStreamModifiers(event),
   });
+  const requestElement = (point: { x: number; y: number }) => {
+    if (pickUrl) {
+      cancelPick();
+      const requestId = String(++requestSequence);
+      pickRequest = requestId;
+      if (!send({ type: "pickElement", requestId, x: point.x, y: point.y, pageUrl: pickUrl })) {
+        cancelPick();
+        return;
+      }
+      pickTimer = setTimeout(() => {
+        cancelPick();
+        post({
+          type: "elementPicked",
+          requestId,
+          selection: null,
+          error: "Selection timed out. Tap to try again.",
+        });
+      }, 10_000);
+    }
+  };
   const onPointerDown = (event: PointerEvent) => {
+    if (event.pointerType === "touch") {
+      fingers.set(event.pointerId, fingerPosition(event));
+      canvas.setPointerCapture(event.pointerId);
+      if (fingers.size >= 2) {
+        event.preventDefault();
+        pinching = true;
+        lastPinch = pinchPoints();
+        touch = null;
+        probe = null;
+        if (wheelFrame !== null) cancelAnimationFrame(wheelFrame);
+        wheelFrame = null;
+        pendingWheel = null;
+        input.blur();
+        return;
+      }
+    }
     if (control?.controller !== "you") return;
     if (!event.isPrimary) return;
     event.preventDefault();
     if (event.pointerType !== "touch") {
+      if (pickUrl) {
+        event.preventDefault();
+        return;
+      }
       const point = pagePoint(event.clientX, event.clientY, false);
       if (!point) return;
       canvas.setPointerCapture(event.pointerId);
@@ -384,6 +510,7 @@ export function start(configuration: PreviewStreamConfiguration) {
       probe = null;
       return;
     }
+    if (pickUrl) return;
     const cached = probeCache;
     const reuse =
       cached !== null &&
@@ -400,8 +527,20 @@ export function start(configuration: PreviewStreamConfiguration) {
     send({ type: "probe", x: point.x, y: point.y });
   };
   const onPointerMove = (event: PointerEvent) => {
+    if (fingers.has(event.pointerId)) fingers.set(event.pointerId, fingerPosition(event));
+    if (pinching) {
+      event.preventDefault();
+      const next = pinchPoints();
+      if (next && lastPinch && size) {
+        transform = pinchPreviewTransform(transform, lastPinch, next, size);
+        applyTransform();
+      }
+      lastPinch = next;
+      return;
+    }
     if (control?.controller !== "you") return;
     if (event.pointerType !== "touch") {
+      if (pickUrl) return;
       const point = pagePoint(event.clientX, event.clientY, mouseButtons !== 0);
       if (!point) return;
       // Chorded presses and releases arrive as pointermove while another button is held.
@@ -440,7 +579,7 @@ export function start(configuration: PreviewStreamConfiguration) {
     }
     touch.panning = true;
     const point = pagePoint(event.clientX, event.clientY, true);
-    if (point) {
+    if (point && !pickUrl) {
       queueWheel(
         point,
         (touch.last.clientX - event.clientX) * point.scale,
@@ -465,8 +604,23 @@ export function start(configuration: PreviewStreamConfiguration) {
     }
   };
   const onPointerEnd = (event: PointerEvent) => {
+    fingers.delete(event.pointerId);
+    if (pinching) {
+      if (fingers.size === 0) {
+        pinching = false;
+        lastPinch = null;
+      }
+      touch = null;
+      probe = null;
+      return;
+    }
     const cancelled = event.type === "pointercancel";
     if (event.pointerType !== "touch") {
+      if (pickUrl) {
+        const point = pagePoint(event.clientX, event.clientY, false);
+        if (!cancelled && event.button === 0 && point) requestElement(point);
+        return;
+      }
       releaseMouse(event, cancelled);
       return;
     }
@@ -480,6 +634,10 @@ export function start(configuration: PreviewStreamConfiguration) {
     }
     const point = pagePoint(event.clientX, event.clientY, false);
     if (!point) return;
+    if (pickUrl) {
+      requestElement(point);
+      return;
+    }
     // Focusing inside the tap's user activation is what lets iOS raise the keyboard.
     if (answered?.editable === true) input.focus({ preventScroll: true });
     else if (answered?.editable === false) input.blur();
@@ -636,7 +794,7 @@ export function start(configuration: PreviewStreamConfiguration) {
         reportPictureInPicture();
       });
     }
-    container.prepend(element);
+    surface.prepend(element);
     canvas.style.background = configuration.background;
     video = element;
     track = captured instanceof CanvasCaptureMediaStreamTrack ? captured : null;
@@ -672,8 +830,18 @@ export function start(configuration: PreviewStreamConfiguration) {
   };
 
   activeViewer = {
+    resetZoom,
+    selectElement: (url) => {
+      cancelPick();
+      pickUrl = url;
+      probe = null;
+      touch = null;
+      input.blur();
+    },
     stop: () => {
       stopped = true;
+      cancelPick();
+      fingers.clear();
       observer.disconnect();
       visualViewport?.removeEventListener("resize", followVisualViewport);
       visualViewport?.removeEventListener("scroll", followVisualViewport);
