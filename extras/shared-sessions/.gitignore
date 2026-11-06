@@ -3,3 +3,6 @@ codex/approved-versions.json
 codex/codex-shared.cmd
 codex/*.log
 codex/__pycache__/
+codex/codex-app-owned.exe
+codex/app-owned-runtime.json
+codex/app-owned-validation.json

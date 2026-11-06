@@ -36,9 +36,11 @@ WSL 需要在 WSL 中运行定制 T3 后端。先用开发启动日志的配对�
 
 ### Codex
 
-执行 SETUP.md 第 3 节。填写自己的 config.json，依次 `check`、`setup`、`run`。共享服务和 T3 provider 使用同一个 CODEX_HOME。
+执行 SETUP.md 第 3 节，使用内网 `feat/pi-session-sync` 最新提交；旧 ZIP 不包含本次适配器。填写自己的 config.json，依次 `check`、`setup`、`build-app-owned`、`python test-app-owned.py`。共享服务与 provider 使用同一个 CODEX_HOME。
 
-保留 `run` 的终端；Codex App 从该启动器打开，T3 provider 使用生成的 codex-shared.cmd。正常 Codex 快捷方式可能另起后端。端口占用先确认所有者，不按进程名批量清理。
+两端任务结束并退出后运行 `run-app-owned`，确认 ready 再启动 T3。App 保持运行，启动终端可以关闭。T3 provider 使用生成的 codex-shared.cmd。端口占用先确认所有者，通过原启动器正常停止；不按进程名清理。
+
+完成信号分开记录：后端中可读到消息、两端同会话续聊、新会话自动出现在侧栏、浏览器实际读页。新会话自动显示目前仍有已知缺口；手动打开只能证明可读取，不能宣称自动发现修复。浏览器工具冷启动使用 60 秒超时。
 
 ## 4. 真实消息验收
 

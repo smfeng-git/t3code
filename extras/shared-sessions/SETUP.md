@@ -4,12 +4,16 @@
 
 ## 1. 获取源码（必需：当前没有安装包）
 
-仓库：https://github.com/smfeng-git/t3code
+内网仓库：http://192.168.10.51/tpf-ci-group/tpf-t3
 
-分支：https://github.com/smfeng-git/t3code/tree/feat/pi-session-sync
+本次启动适配器以该内网分支为准，GitHub 和旧 ZIP 不保证已同步。
+
+原 GitHub 仓库：https://github.com/smfeng-git/t3code
+
+分支：http://192.168.10.51/tpf-ci-group/tpf-t3/-/tree/feat/pi-session-sync
 
 ```powershell
-git clone --branch feat/pi-session-sync --single-branch https://github.com/smfeng-git/t3code.git t3code-custom
+git clone --branch feat/pi-session-sync --single-branch http://192.168.10.51/tpf-ci-group/tpf-t3.git t3code-custom
 cd t3code-custom
 ```
 
@@ -72,20 +76,38 @@ Pi Web 必须持续运行。初次全量历史可能进入 Settled；这不代�
 
 ## 3. 可选：Windows Codex 共享后端
 
-前提：已验证定制 T3；自己的 Codex App 已登录；Python 3.11+；Node 22+（连接桥需要全局 WebSocket）。Codex App 支持指定共享服务是对已测版本的实现观察，不是跨版本稳定性承诺。
+推荐使用 App-owned 模式：Codex App → 原生适配器 → 共享 Codex 后端 ← T3 连接桥。App 持有后端，T3 与 App 各有独立协议连接。浏览器辅助 CLI 仍独立运行。此入口依赖已测 App 的启动参数，不是官方跨版本稳定接口。
 
-1. 将 codex 目录放到固定路径。复制 config.example.json 为 config.json，填写自己的 Node、Codex CLI、Codex App 可执行文件和 CODEX_HOME。路径可含空格，连接桥路径不要包含 `%` 或 `!`。
-2. 在该目录运行 `python run.py check`，只检查路径和本机监听配置，不启动程序。
-3. 运行 `python run.py setup`，生成 codex-shared.cmd 和可执行文件版本指纹。
-4. 在 T3 Codex provider 中，先记下原来的 Binary path/Home path；把 Binary path 改为生成的 codex-shared.cmd，Home path 指向同一个 CODEX_HOME，启用 Sync sessions（如该实例提供）。不要混用 shadow home。
-5. 等任务结束，完全退出 Codex App 和 T3；运行 `python run.py run`。它启动隐藏的本机 Codex 后端及 Codex App，然后手动打开定制 T3。
-6. 保留这个控制终端；所有任务结束并关闭两个客户端之后，才按 Ctrl+C 停止它启动的后端。关闭控制终端可能打断任务。
+前提：Windows、已验证的定制 T3、已登录的 Codex App、Python 3.11+、Node 22+（全局 WebSocket）、Windows .NET Framework C# 编译器。
 
-工具不会替换应用文件、写 T3 设置或恢复数据库；不需要管理员权限。它拒绝接入已占用的端口，不会按进程名批量清理；不自动重试失败消息，也不自动重启故障后端。
+1. 将仓库的 `codex` 目录放到固定位置，或直接在该目录运行。复制 `config.example.json` 为 `config.json`，填写自己的五项路径/地址。CLI 必须是真实 Codex 可执行文件，不要填适配器。路径可含空格，连接桥路径不要含 `%` 或 `!`。使用自己的 CODEX_HOME。
+2. 在该目录依次运行：
 
-可执行文件改变时拒绝启动，需重新验证后再 setup。这只是文件变化检测：T3 更新、应用资源更新、协议兼容性仍需人工检查，不保证所有更新都能被指纹发现。
+```powershell
+python run.py check
+python run.py setup
+python run.py build-app-owned
+python test-app-owned.py
+```
 
-本启动器为此次新整理版本；只完成隔离检查，尚未在另一台机器完成真实双向聊天验收。不要把之前作者机器上的旧启动器验收当成此版本的完整验收。
+`setup` 生成连接桥 CMD 并记录三个可执行文件的指纹；`build-app-owned` 从源码编译原生 exe。测试使用临时 CODEX_HOME 和随机本机端口，不访问真实会话或发起模型请求；成功应输出 `passed: true` 和 10 项检查。测试可通过环境变量 `T3_SHARED_CODEX_CONFIG` 指定测试配置；日常启动固定读取本目录 config.json。
+
+3. 在 T3 记下原 Binary path/Home path，把 Codex provider 的 Binary path 改为本目录生成的 `codex-shared.cmd`，Home path 使用配置中的 CODEX_HOME，启用 Sync sessions（如提供）。不要使用 shadow home。
+4. 等两端任务结束，完全退出 Codex App 和 T3。如果旧共享后端仍占用配置端口，先通过原启动器正常停止它；新工具会拒绝占用端口，不自动杀进程。
+5. 运行 `python run.py run-app-owned`，或双击 `Start-App-Owned-Shared-Codex.cmd`。看到 `App-owned shared backend ready` 后打开定制 T3。启动脚本可以退出，**Codex App 必须保持打开**。
+6. 按 ACCEPTANCE.md 验证同一会话双向续聊、浏览器实际读页与手机。结束所有任务后正常退出 App，适配器会清理它创建的后端；退出 App 会中断仍在使用它的 T3 请求。
+
+程序不修改 T3 数据库、应用安装文件或 provider 设置。失败请求不会自动重放。无需管理员权限。若脚本显示 STOP/ERROR，保留报错先检查，不反复启动。
+
+已测本机组合：Codex App 26.1029.7803.0、CLI 0.166.0-alpha.6。原适配器已通过 App 内置浏览器读页、App/T3 在同一会话双向发送验证；便携入口仍需在接收者机器验收。仅 Desktop 主调用包含 `app-server --analytics-default-enabled` 时选择共享，其余 helper 调用委托真实 CLI；App 更新后要重新核验这个调用约定。
+
+**已知限制：消息在后端可读，不等于新会话自动出现在 Codex 侧栏。T3 新建会话的自动发现/刷新/项目归类仍未解决，不把手动打开算自动同步通过。** T3 临时目录也可能导致归类与消息中提及的项目路径不同。
+
+浏览器冷启动使用 60 秒工具超时，分别检查发现、打开、实际页内容；Statsig 警告本身不代表失败。`browser access host unavailable` 与超时应分开诊断，不绕过认证或复制其他会话的授权信息。
+
+App/CLI/Node 文件变化时启动器会拒绝运行；先检查兼容性、重新 setup 和编译/测试。T3 资源和 App 资源更新未必由 exe 指纹覆盖，仍需真实验收。
+
+旧独立模式保留为 `python run.py run`：必须保留控制终端，两个客户端退出后 Ctrl+C；此模式不保证 App 内置浏览器可用。两种模式不能同时占同一端口。
 
 ## 4. 手机
 
@@ -95,7 +117,7 @@ Pi Web 必须持续运行。初次全量历史可能进入 Settled；这不代�
 
 不要直接用官方自动更新覆盖定制版；先在源码分支整合上游、验证、重新构建。此工具不会把旧 server.asar 强行覆盖到新桌面。
 
-Codex 回退：任务结束并退出两个客户端 → Ctrl+C 停止本工具后端 → 在 T3 恢复此前记录的 provider 路径 → 用正常快捷方式启动。聊天记录不回滚。
+Codex 回退：任务结束并退出两个客户端（App-owned 后端随 App 退出；旧独立模式还需 Ctrl+C 停止控制终端）→ 在 T3 恢复此前记录的 provider 路径 → 用正常快捷方式启动。聊天记录不回滚。
 
 Pi 回退：清空 Pi Web shared backend 或禁用该共享 provider，恢复常规 Pi provider；已有显示记录不自动删除，不应为了回退同步而覆盖会话数据库。
 

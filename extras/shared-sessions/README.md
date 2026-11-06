@@ -1,6 +1,6 @@
 # T3 共享会话接入包
 
-这是 **源码分支 + 配套工具**，不是 Windows/Android 安装包。接收者使用自己的电脑、账号与模型权限，不连接分享者的机器。版本：2026-11-05，第 2 版。
+这是 **源码分支 + 配套工具**，不是 Windows/Android 安装包。接收者使用自己的电脑、账号与模型权限，不连接分享者的机器。源码更新：2026-11-06，增加 App-owned Codex 启动适配器。旧第 2 版 ZIP 不包含这次更新。
 
 ## 给接收者：从这里开始
 
@@ -8,20 +8,24 @@
 
 > 请按包内 AI-START.md 为我的独立环境接入 T3 定制功能。先检查本机系统、T3、Codex、Pi Web 和 WSL 的实际路径与版本，列出环境对应关系。执行我需要的 provider 分支，完成真实双向消息验证后交付启动方式。不要只应用补丁就宣布完成。需要我登录或选择安装位置时再问我。
 
-源码：[feat/pi-session-sync 分支](https://github.com/smfeng-git/t3code/tree/feat/pi-session-sync)。该分支已经包含 T3 改动，**无需给 T3 再打补丁**。ZIP 的补丁只用于另一个项目 Pi Web。
+源码：[feat/pi-session-sync 分支](http://192.168.10.51/tpf-ci-group/tpf-t3/-/tree/feat/pi-session-sync)。该分支已经包含 T3 改动，**无需给 T3 再打补丁**。ZIP 的补丁只用于另一个项目 Pi Web。
 
 ## 选择需要的功能
 
-| 需求 | 需要运行的组件 | 步骤 |
-| --- | --- | --- |
-| Pi 全目录共享会话和双向续聊 | 定制 T3 后端 + 配套 Pi Web + Pi | [SETUP.md 第 1、2 节](SETUP.md) |
-| Codex App 与 T3 双向续聊 | 定制 T3 + Codex App + 共享启动器 | [SETUP.md 第 1、3 节](SETUP.md) |
-| 侧栏环境筛选、项目分组 | 定制桌面或 Web 前端 | [SETUP.md 第 1 节](SETUP.md) |
-| 手机访问上述环境 | 对应定制 T3 后端 + 官方手机 App | [SETUP.md 第 4 节](SETUP.md) |
+| 需求                        | 需要运行的组件                   | 步骤                            |
+| --------------------------- | -------------------------------- | ------------------------------- |
+| Pi 全目录共享会话和双向续聊 | 定制 T3 后端 + 配套 Pi Web + Pi  | [SETUP.md 第 1、2 节](SETUP.md) |
+| Codex App 与 T3 双向续聊    | 定制 T3 + Codex App + 共享启动器 | [SETUP.md 第 1、3 节](SETUP.md) |
+| 侧栏环境筛选、项目分组      | 定制桌面或 Web 前端              | [SETUP.md 第 1 节](SETUP.md)    |
+| 手机访问上述环境            | 对应定制 T3 后端 + 官方手机 App  | [SETUP.md 第 4 节](SETUP.md)    |
 
 仅 Windows Codex 不需要安装 Pi Web。仅 Pi 共享不需要 Codex 启动器。Windows Codex 和 WSL Pi 同时使用时，分别确认两个 T3 后端均为定制版本；安装 Windows 前端不代表 WSL 后端已更新。
 
-## 这次修复
+## 启动适配器更新
+
+Codex 改用 App 持有共享后端，可继续使用 T3 连接桥；原生适配器源码、编译入口及隔离测试已入库。按照 SETUP.md 第 3 节接入。App 必须保持打开，已有会话续聊与新会话自动出现在侧栏需要分别验收；后者仍有已知缺口。本次没有更新安装包或 ZIP。
+
+## 登录配置
 
 新增 [cloud.env.example](cloud.env.example)：构建前合并到 T3 根目录 `.env.local`，避免缺少公开登录配置而隐藏账号按钮。CI 构建也已补齐同样的配置。
 
@@ -29,15 +33,15 @@
 
 ## 文件作用
 
-| 文件 | 用途 |
-| --- | --- |
-| AI-START.md | AI 执行顺序、检查点和故障定位 |
-| SETUP.md | 构建、Pi、Codex、手机的具体步骤 |
-| cloud.env.example | 公开登录构建配置，无私人 token |
-| patches/pi-web-shared-integration.patch | Pi Web API 与消息去重配套补丁 |
-| codex/run.py、bridge.cjs、config.example.json | Windows Codex 共享启动器及模板 |
-| ACCEPTANCE.md | 双向消息、全目录发现和回退验证 |
-| PACKAGE.json、SHA256SUMS.json | ZIP 附带的源码提交标识与校验值 |
+| 文件                                          | 用途                            |
+| --------------------------------------------- | ------------------------------- |
+| AI-START.md                                   | AI 执行顺序、检查点和故障定位   |
+| SETUP.md                                      | 构建、Pi、Codex、手机的具体步骤 |
+| cloud.env.example                             | 公开登录构建配置，无私人 token  |
+| patches/pi-web-shared-integration.patch       | Pi Web API 与消息去重配套补丁   |
+| codex/run.py、bridge.cjs、config.example.json | Windows Codex 共享启动器及模板  |
+| ACCEPTANCE.md                                 | 双向消息、全目录发现和回退验证  |
+| PACKAGE.json、SHA256SUMS.json                 | ZIP 附带的源码提交标识与校验值  |
 
 ## 为什么还需要接入
 

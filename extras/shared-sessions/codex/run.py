@@ -116,14 +116,61 @@ def run(c):
                 backend.wait(timeout=15)
 
 
+def build_app_owned(c):
+    compiler = Path(os.environ['WINDIR']) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+    if not compiler.is_file():
+        raise RuntimeError('Install the Windows .NET Framework C# compiler first.')
+    subprocess.run([str(compiler), '/nologo', '/target:exe',
+                    '/reference:System.Web.Extensions.dll', '/out:codex-app-owned.exe',
+                    'AppOwnedLauncher.cs'], cwd=ROOT, check=True)
+    print('Built codex-app-owned.exe. Next: python test-app-owned.py')
+
+
+def run_app_owned(c):
+    approved = json.loads((ROOT / 'approved-versions.json').read_text())
+    if fingerprints(c) != approved:
+        raise RuntimeError('An executable changed. Recheck compatibility before running setup again.')
+    ensure_app_closed(c)
+    if open_port(c):
+        raise RuntimeError('Port occupied. Stop its verified owner before switching modes; nothing was stopped.')
+    if not (ROOT / 'codex-app-owned.exe').is_file():
+        raise RuntimeError('Run python run.py build-app-owned first.')
+    env = os.environ.copy()
+    for key in ('ELECTRON_RUN_AS_NODE', 'CODEX_ELECTRON_USER_DATA_PATH',
+                'CODEX_APP_SERVER_WS_URL', 'CODEX_APP_SERVER_USE_LOCAL_DAEMON'):
+        env.pop(key, None)
+    env.update(CODEX_HOME=c['home'], CODEX_CLI_PATH=str(ROOT / 'codex-app-owned.exe'),
+               CODEX_APP_RUNTIME_CLI_PATH=c['binary'], CODEX_APP_SERVER_FORCE_CLI='1',
+               T3_SHARED_CODEX_CONFIG=str(ROOT / 'config.json'))
+    started = time.time()
+    subprocess.Popen([c['app']], cwd=c['home'], env=env)
+    runtime_file = ROOT / 'app-owned-runtime.json'
+    for _ in range(200):
+        if open_port(c) and runtime_file.exists() and runtime_file.stat().st_mtime >= started:
+            runtime = json.loads(runtime_file.read_text(encoding='utf8'))
+            port = urlparse(c['url']).port
+            owner = subprocess.run(['powershell', '-NoProfile', '-Command',
+                f'(Get-NetTCPConnection -LocalPort {port} -State Listen | Select-Object -ExpandProperty OwningProcess -Unique)'],
+                capture_output=True, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            if owner.stdout.strip() == str(runtime['backendPid']):
+                print('App-owned shared backend ready. Open custom T3; keep Codex App running.')
+                return
+        time.sleep(.1)
+    raise RuntimeError('Readiness not confirmed. Inspect App logs; no fallback, termination or request replay attempted.')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['check', 'setup', 'run'])
+    parser.add_argument('command', choices=['check', 'setup', 'run', 'build-app-owned', 'run-app-owned'])
     args = parser.parse_args()
     try:
         config = load_config()
         if args.command == 'setup':
             setup(config)
+        elif args.command == 'build-app-owned':
+            build_app_owned(config)
+        elif args.command == 'run-app-owned':
+            run_app_owned(config)
         elif args.command == 'run':
             run(config)
         else:
