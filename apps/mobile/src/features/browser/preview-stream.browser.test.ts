@@ -15,14 +15,24 @@ import {
 } from "./preview-stream.browser";
 
 const mocks = vi.hoisted(() => ({
+  paint: vi.fn(),
   events: null as PreviewStreamEvents | null,
   send: vi.fn((_input: PreviewStreamInput) => true),
 }));
 vi.mock("@t3tools/client-runtime/preview/server-browser-stream", () => ({
-  createPreviewFramePainter: (_canvas: unknown, painted: () => void) => ({
-    paint: vi.fn(painted),
-    stop: vi.fn(),
-  }),
+  createPreviewFramePainter: (_canvas: unknown, painted: () => void) => {
+    let stopped = false;
+    return {
+      paint: vi.fn((frame: unknown) => {
+        if (stopped) return;
+        mocks.paint(frame);
+        painted();
+      }),
+      stop: vi.fn(() => {
+        stopped = true;
+      }),
+    };
+  },
   createPreviewStreamClient: (_target: unknown, events: PreviewStreamEvents) => {
     mocks.events = events;
     return { send: mocks.send, stop: vi.fn() };
@@ -114,6 +124,15 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
       requestId: expect.any(String),
       setting: { _tag: "freeform", width: 400, height: 800 },
     });
+    mocks.paint.mockClear();
+    events.onViewportApplied?.({
+      type: "viewportApplied",
+      requestId: "layout-1",
+      image: null,
+      error: "Layout failed",
+    });
+    events.onFrame(new Uint8Array([1]).buffer);
+    expect(mocks.paint).toHaveBeenCalledOnce();
     mocks.send.mockClear();
     fitToScreen();
     expect(mocks.send).toHaveBeenCalledExactlyOnceWith({
@@ -308,6 +327,9 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
       throw new Error("Expected fixed viewport");
     posted.mockClear();
     vi.advanceTimersByTime(10_000);
+    mocks.paint.mockClear();
+    events.onFrame(new Uint8Array([2]).buffer);
+    expect(mocks.paint).toHaveBeenCalledOnce();
     expect(posted.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(
       expect.objectContaining({ type: "layout", state: "error" }),
     );

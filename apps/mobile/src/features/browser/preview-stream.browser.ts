@@ -230,6 +230,7 @@ export function start(configuration: PreviewStreamConfiguration) {
   let layoutSetting: PreviewViewportSetting = configuration.viewport ?? { _tag: "fill" };
   let fittingViewport = layoutSetting._tag === "fill";
   let layoutRequest: string | null = null;
+  let layoutFailed = false;
   let layoutTimer: ReturnType<typeof setTimeout> | null = null;
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
   let wheelFrame: number | null = null;
@@ -302,16 +303,20 @@ export function start(configuration: PreviewStreamConfiguration) {
     input.disabled = !interactive;
     const requestId = `layout-${++requestSequence}`;
     layoutRequest = requestId;
+    layoutFailed = false;
     post({ type: "layout", state: "pending", setting: layoutSetting });
     painter.stop();
     if (layoutTimer !== null) clearTimeout(layoutTimer);
     layoutTimer = setTimeout(() => {
       if (layoutRequest !== requestId) return;
+      layoutFailed = true;
+      painter.stop();
+      painter = createPreviewFramePainter(canvas, painted);
       post({
         type: "layout",
         state: "error",
         setting: layoutSetting,
-        detail: "Layout was not confirmed. Retry to resume interaction.",
+        detail: "The PC did not confirm the page size in time.",
       });
     }, 10_000);
     send({ type: "viewport", setting, requestId });
@@ -367,13 +372,16 @@ export function start(configuration: PreviewStreamConfiguration) {
       },
       {
         onFrame: (jpeg) => {
-          if (layoutRequest === null) painter.paint(jpeg);
+          if (layoutRequest === null || layoutFailed) painter.paint(jpeg);
         },
         onViewportApplied: (result) => {
           if (result.requestId !== layoutRequest || stopped || control?.controller !== "you")
             return;
           const image = result.image;
           if (!image) {
+            layoutFailed = true;
+            painter.stop();
+            painter = createPreviewFramePainter(canvas, painted);
             if (layoutTimer !== null) clearTimeout(layoutTimer);
             layoutTimer = null;
             post({
@@ -384,6 +392,7 @@ export function start(configuration: PreviewStreamConfiguration) {
             });
             return;
           }
+          layoutFailed = false;
           painter.stop();
           painter = createPreviewFramePainter(canvas, () => {
             if (layoutRequest === result.requestId) {

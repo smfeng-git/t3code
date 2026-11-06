@@ -1,4 +1,5 @@
 import * as Dialog from "../../components/ui/Dialog";
+import type { ReactElement } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
@@ -64,7 +65,11 @@ export function BrowserTabMenu({
   onViewportChange,
   viewportSetting,
   viewportEnabled = true,
+  mode = "all",
+  children,
 }: {
+  readonly mode?: "all" | "viewport" | "page";
+  readonly children?: ReactElement;
   readonly environmentId: EnvironmentId;
   readonly tab: PreviewSessionSnapshot;
   readonly streaming: boolean;
@@ -259,12 +264,20 @@ export function BrowserTabMenu({
       // the other state's actions.
       key={streaming ? "streaming" : "idle"}
       accessible
-      accessibilityLabel="Browser tab options"
+      accessibilityLabel={mode === "viewport" ? "Page size" : "Browser tab options"}
       accessibilityRole="button"
-      actions={streaming ? actions : [closeAction]}
+      actions={
+        mode === "viewport"
+          ? viewportEnabled
+            ? actions.find((action) => action.id === "viewport")!.subactions!
+            : []
+          : streaming
+            ? actions.filter((action) => mode !== "page" || action.id !== "viewport")
+            : [closeAction]
+      }
       onPressAction={({ nativeEvent }) => onAction(nativeEvent.event)}
     >
-      <ControlPill icon="ellipsis" accessibilityLabel="Browser tab options" />
+      {children ?? <ControlPill icon="ellipsis" accessibilityLabel="Browser tab options" />}
     </Menu>
   );
 }

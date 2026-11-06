@@ -18,9 +18,12 @@ import { EnvironmentId, ThreadId, type PreviewSessionSnapshot } from "@t3tools/c
 import { normalizePreviewUrl, previewPdfAssetUrl } from "@t3tools/shared/preview";
 import * as Option from "effect/Option";
 import { useEffect, useRef, useState } from "react";
-import { Platform, TextInput, View } from "react-native";
+import { Platform, Pressable, ScrollView, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { Sheet } from "../../components/ui/Sheet";
+import { NavigationRow } from "../../components/ui/NavigationRow";
+import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
 import { ControlPill } from "../../components/ui/ControlPill";
 import { useAppForeground } from "../../lib/appState";
 import { useHardwareBack } from "../../lib/backHandler";
@@ -116,10 +119,10 @@ function BrowserPreviewScreen({
     setFullscreen(compactToolbar);
     setControlsOpen(false);
   }
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- synchronizes Android system bars with the focused native browser screen
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- synchronizes native headers and system bars with fullscreen presentation
   useEffect(() => {
-    if (Platform.OS !== "android") return;
     navigation.setOptions({
+      headerShown: Platform.OS === "ios" && !fullscreen,
       statusBarHidden: focused && fullscreen,
       navigationBarHidden: focused && fullscreen,
     });
@@ -205,6 +208,27 @@ function BrowserPreviewScreen({
     setControlsOpen(false);
   };
 
+  const connectionLabel = !streaming
+    ? "Connecting…"
+    : layoutState?.state === "pending"
+      ? "Adapting layout…"
+      : layoutState?.state === "error"
+        ? "View only · layout unavailable"
+        : !canControl
+          ? "Connected · view only"
+          : "Connected · you have control";
+  const canAnnotate =
+    viewportEnabled &&
+    layoutState?.state !== "pending" &&
+    layoutState?.state !== "error" &&
+    pdfUri === null;
+  const togglePicking = () => {
+    streamRef.current?.selectElement(picking ? null : pageUrl);
+    setPicking(!picking);
+    setSelectionNotice(null);
+    setControlsOpen(false);
+  };
+
   return (
     <View
       className="flex-1 bg-sheet"
@@ -218,6 +242,7 @@ function BrowserPreviewScreen({
       {!compactToolbar && !fullscreen ? (
         <AppBar
           title={tab ? browserTabTitle(tab) : "Browser"}
+          subtitle={connectionLabel}
           onBack={onClose}
           options={{ headerBackVisible: false }}
           actions={
@@ -259,7 +284,7 @@ function BrowserPreviewScreen({
           }
         />
       ) : null}
-      {Platform.OS === "ios" ? (
+      {Platform.OS === "ios" && !fullscreen ? (
         <SheetHeader
           title={tab ? browserTabTitle(tab) : "Browser"}
           onClose={onClose}
@@ -283,115 +308,22 @@ function BrowserPreviewScreen({
       ) : null}
       {tab ? (
         <>
-          <View
-            style={
-              fullscreen
-                ? {
-                    position: "absolute",
-                    top: insets.top,
-                    left: insets.left,
-                    right: insets.right,
-                    zIndex: 1,
-                    display: controlsOpen ? "flex" : "none",
-                  }
-                : undefined
-            }
-            className="bg-sheet"
-          >
-            <BrowserAddressBar
-              key={`address:${tab.tabId}`}
-              environmentId={environmentId}
-              tab={tab}
-              streaming={streaming}
-              ready={
-                streaming &&
-                canControl &&
-                !candidate &&
-                layoutState?.state !== "pending" &&
-                layoutState?.state !== "error"
-              }
-              onCommand={(input) => withControlsClosed(() => streamRef.current?.command(input))}
-              onPaste={() => withControlsClosed(() => streamRef.current?.paste())}
-              viewportSetting={viewportSetting}
-              viewportEnabled={viewportEnabled}
-              onViewportChange={changeViewport}
-              onClose={compactToolbar ? onClose : undefined}
-            />
-            <View className="flex-row flex-wrap gap-2 px-2 pb-2">
-              {Platform.OS === "android" ? (
-                <Button
-                  size="compact"
-                  label="Rotate"
-                  onPress={() => {
-                    setControlsOpen(false);
-                    void setBrowserOrientation(
-                      dimensions.width > dimensions.height ? "portrait" : "landscape",
-                    ).catch((error: unknown) => Dialog.alert("Could not rotate", String(error)));
-                  }}
-                />
-              ) : null}
-              <Button
-                size="compact"
-                label="Auto-fit layout"
-                disabled={!viewportEnabled}
-                onPress={() => changeViewport({ _tag: "fill" })}
-              />
-              <Button
-                size="compact"
-                label="Reset view"
-                onPress={() => withControlsClosed(() => streamRef.current?.resetZoom())}
-              />
-              <Button
-                size="compact"
-                label={picking ? "Cancel selection" : "Annotate"}
-                disabled={
-                  !viewportEnabled ||
-                  layoutState?.state === "pending" ||
-                  layoutState?.state === "error" ||
-                  pdfUri !== null
+          {!fullscreen ? (
+            <View className="bg-sheet">
+              <BrowserAddressBar
+                key={`address:${tab.tabId}`}
+                tab={tab}
+                ready={
+                  streaming &&
+                  canControl &&
+                  !picking &&
+                  layoutState?.state !== "pending" &&
+                  layoutState?.state !== "error"
                 }
-                onPress={() => {
-                  streamRef.current?.selectElement(picking ? null : pageUrl);
-                  setPicking(!picking);
-                  setSelectionNotice(null);
-                  setControlsOpen(false);
-                }}
+                onCommand={(input) => streamRef.current?.command(input)}
               />
-              {Platform.OS === "android" ? (
-                <Button
-                  size="compact"
-                  label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-                  onPress={() => {
-                    setFullscreen(!fullscreen);
-                    setControlsOpen(false);
-                  }}
-                />
-              ) : null}
-              {fullscreen ? (
-                <Button
-                  size="compact"
-                  label="Hide controls"
-                  onPress={() => setControlsOpen(false)}
-                />
-              ) : null}
-              {control?.canOperate ? (
-                <View className="ml-auto">
-                  <Button
-                    size="compact"
-                    label={canControl ? "Release control" : "Take control"}
-                    disabled={control.controller === "another-viewer"}
-                    onPress={() =>
-                      withControlsClosed(() =>
-                        streamRef.current?.command({
-                          type: canControl ? "releaseControl" : "takeControl",
-                        }),
-                      )
-                    }
-                  />
-                </View>
-              ) : null}
             </View>
-          </View>
+          ) : null}
           {live ? (
             <PreviewStreamWebView
               key={`stream:${tab.tabId}`}
@@ -462,23 +394,210 @@ function BrowserPreviewScreen({
           ) : (
             <View className="flex-1" />
           )}
+          {!fullscreen ? (
+            <View
+              pointerEvents={candidate ? "none" : "auto"}
+              style={{ opacity: candidate ? 0 : 1 }}
+              className="flex-row items-center border-t border-input-border bg-sheet px-2"
+            >
+              <BrowserToolbarAction
+                icon={picking ? "xmark" : "pencil"}
+                label={picking ? "Cancel" : "Annotate"}
+                disabled={!picking && !canAnnotate}
+                onPress={togglePicking}
+              />
+              <BrowserToolbarAction
+                icon="arrow.up.left.and.arrow.down.right"
+                label="Fullscreen"
+                onPress={() => setFullscreen(true)}
+              />
+              <BrowserToolbarAction
+                icon="ellipsis"
+                label="More"
+                onPress={() => setControlsOpen(true)}
+              />
+            </View>
+          ) : null}
+          {controlsOpen ? (
+            <Sheet
+              title="Browser options"
+              onClose={() => setControlsOpen(false)}
+              expanded={dimensions.width > dimensions.height}
+            >
+              <ScrollView
+                className="flex-1 bg-sheet"
+                contentContainerStyle={{ paddingBottom: 24 }}
+                keyboardShouldPersistTaps="handled"
+              >
+                {fullscreen ? (
+                  <View className="flex-row border-b border-input-border px-2">
+                    <BrowserToolbarAction
+                      icon={picking ? "xmark" : "pencil"}
+                      label={picking ? "Cancel" : "Annotate"}
+                      disabled={!picking && !canAnnotate}
+                      onPress={togglePicking}
+                    />
+                    <BrowserToolbarAction
+                      icon="arrow.down.right.and.arrow.up.left"
+                      label="Exit fullscreen"
+                      onPress={() => withControlsClosed(() => setFullscreen(false))}
+                    />
+                    <BrowserToolbarAction
+                      icon="chevron.left"
+                      label="Close browser"
+                      onPress={onClose}
+                    />
+                  </View>
+                ) : null}
+                <BrowserOptionsHeading title="Phone display" />
+                <NavigationRow
+                  title="Reset zoom"
+                  subtitle="Only changes the view on this phone"
+                  leading={
+                    <SymbolView name="arrow.clockwise" size={22} tintColorClassName="accent-icon" />
+                  }
+                  onPress={() => withControlsClosed(() => streamRef.current?.resetZoom())}
+                />
+                {Platform.OS === "android" ? (
+                  <NavigationRow
+                    title="Rotate screen"
+                    leading={
+                      <SymbolView
+                        name="arrow.left.arrow.right"
+                        size={22}
+                        tintColorClassName="accent-icon"
+                      />
+                    }
+                    onPress={() =>
+                      withControlsClosed(() => {
+                        void setBrowserOrientation(
+                          dimensions.width > dimensions.height ? "portrait" : "landscape",
+                        ).catch((error: unknown) =>
+                          Dialog.alert("Could not rotate", String(error)),
+                        );
+                      })
+                    }
+                  />
+                ) : null}
+                <BrowserOptionsHeading title="PC page layout" />
+                <NavigationRow
+                  title="Auto-fit layout"
+                  subtitle="Fit the shared page to this phone"
+                  disabled={!viewportEnabled}
+                  trailing={
+                    viewportSetting._tag === "fill" ? (
+                      <SymbolView
+                        name="checkmark"
+                        size={20}
+                        tintColorClassName="accent-primary-text"
+                      />
+                    ) : null
+                  }
+                  onPress={() => changeViewport({ _tag: "fill" })}
+                />
+                <BrowserTabMenu
+                  environmentId={environmentId}
+                  tab={tab}
+                  streaming={streaming}
+                  viewportSetting={viewportSetting}
+                  viewportEnabled={viewportEnabled}
+                  onViewportChange={changeViewport}
+                  mode="viewport"
+                >
+                  <NavigationRow
+                    title="Page size"
+                    subtitle={
+                      viewportSetting._tag === "fill"
+                        ? "Presets and custom dimensions"
+                        : `${viewportSetting.width} × ${viewportSetting.height}`
+                    }
+                    disabled={!viewportEnabled}
+                  />
+                </BrowserTabMenu>
+                <BrowserOptionsHeading title="Control" />
+                {control?.canOperate ? (
+                  <NavigationRow
+                    title={canControl ? "Release control" : "Take control"}
+                    subtitle={
+                      control.controller === "another-viewer"
+                        ? "Another device has control"
+                        : canControl
+                          ? "Switch to view only"
+                          : "Interact with the shared PC page"
+                    }
+                    disabled={control.controller === "another-viewer"}
+                    onPress={() =>
+                      withControlsClosed(() =>
+                        streamRef.current?.command({
+                          type: canControl ? "releaseControl" : "takeControl",
+                        }),
+                      )
+                    }
+                  />
+                ) : (
+                  <AppText className="px-4 py-3 text-sm text-foreground-muted">
+                    This connection has view-only access.
+                  </AppText>
+                )}
+                <BrowserTabMenu
+                  environmentId={environmentId}
+                  tab={tab}
+                  streaming={streaming && canControl && !picking}
+                  onPaste={
+                    canControl && !picking
+                      ? () => withControlsClosed(() => streamRef.current?.paste())
+                      : undefined
+                  }
+                  mode="page"
+                >
+                  <NavigationRow
+                    title="Page options"
+                    subtitle="Appearance, page zoom and site data"
+                  />
+                </BrowserTabMenu>
+                {tabs.length > 1 ? (
+                  <>
+                    <BrowserOptionsHeading title="Open tabs" />
+                    {tabs.map((entry) => (
+                      <NavigationRow
+                        key={entry.tabId}
+                        title={browserTabTitle(entry)}
+                        subtitle={browserTabUrl(entry)}
+                        trailing={
+                          entry.tabId === tabId ? (
+                            <SymbolView
+                              name="checkmark"
+                              size={20}
+                              tintColorClassName="accent-primary-text"
+                            />
+                          ) : null
+                        }
+                        onPress={() => withControlsClosed(() => selectTab(entry.tabId))}
+                      />
+                    ))}
+                  </>
+                ) : null}
+              </ScrollView>
+            </Sheet>
+          ) : null}
           {candidate ? (
             <View
-              className="absolute left-0 right-0 gap-2 bg-sheet px-3 py-2"
+              className="absolute left-3 right-3 gap-2 rounded-xl border border-input-border bg-sheet p-3"
               style={selectionSide === "top" ? { top: insets.top } : { bottom: insets.bottom }}
             >
               <AppText numberOfLines={1} className="text-sm text-foreground">
-                Frozen snapshot · {candidate.index === 0 ? "Element" : `Parent ${candidate.index}`}:{" "}
+                Selected {candidate.index === 0 ? "element" : `parent ${candidate.index}`}:{" "}
                 {highlighted?.element.componentName ??
                   highlighted?.element.selector ??
                   highlighted?.element.tagName}
               </AppText>
               <AppText className="text-xs text-foreground-muted">
-                The PC page is still running. Pinch to inspect this snapshot.
+                Frozen snapshot. Pinch to inspect before confirming.
               </AppText>
               <View className="flex-row flex-wrap gap-2">
                 <Button
                   label="Parent"
+                  size="compact"
                   disabled={candidate.index >= (candidate.selection.ancestors?.length ?? 0)}
                   onPress={() => {
                     streamRef.current?.highlightElement(candidate.index + 1);
@@ -487,6 +606,7 @@ function BrowserPreviewScreen({
                 />
                 <Button
                   label="Previous level"
+                  size="compact"
                   disabled={candidate.index === 0}
                   onPress={() => {
                     streamRef.current?.highlightElement(candidate.index - 1);
@@ -495,6 +615,8 @@ function BrowserPreviewScreen({
                 />
                 <Button
                   label="Reselect"
+                  size="compact"
+                  tone="text"
                   onPress={() => {
                     setCandidate(null);
                     streamRef.current?.selectElement(pageUrl);
@@ -502,6 +624,8 @@ function BrowserPreviewScreen({
                 />
                 <Button
                   label="Cancel"
+                  size="compact"
+                  tone="text"
                   onPress={() => {
                     setCandidate(null);
                     setPicking(false);
@@ -509,14 +633,29 @@ function BrowserPreviewScreen({
                 />
                 <Button
                   label="Confirm element"
+                  size="compact"
                   tone="primary"
                   onPress={() => streamRef.current?.highlightElement(candidate.index, true)}
                 />
               </View>
             </View>
           ) : null}
+          {picking && !candidate && !selectionNotice ? (
+            <View
+              pointerEvents="none"
+              className="absolute left-3 right-3 rounded-xl bg-sheet px-3 py-2"
+              style={{ bottom: insets.bottom + (fullscreen ? 64 : 72) }}
+            >
+              <AppText className="text-center text-sm text-foreground">
+                Tap an element to inspect it. Pinch to zoom.
+              </AppText>
+            </View>
+          ) : null}
           {selectionNotice && !candidate ? (
-            <View className="absolute bottom-0 left-0 right-0 bg-sheet px-3 py-2">
+            <View
+              className="absolute left-3 right-3 rounded-xl bg-sheet px-3 py-2"
+              style={{ bottom: insets.bottom + (fullscreen ? 60 : 64) }}
+            >
               <AppText accessibilityLiveRegion="polite" className="text-sm text-foreground">
                 {selectionNotice}
               </AppText>
@@ -524,7 +663,9 @@ function BrowserPreviewScreen({
             </View>
           ) : null}
           {fullscreen && !controlsOpen && !candidate ? (
-            <View style={{ position: "absolute", top: insets.top + 8, right: insets.right + 8 }}>
+            <View
+              style={{ position: "absolute", bottom: insets.bottom + 12, right: insets.right + 12 }}
+            >
               <ControlPill
                 icon="ellipsis"
                 accessibilityLabel="Show browser controls"
@@ -545,27 +686,13 @@ function BrowserPreviewScreen({
 }
 
 function BrowserAddressBar({
-  environmentId,
   tab,
   ready,
-  streaming,
   onCommand,
-  onPaste,
-  viewportSetting,
-  viewportEnabled,
-  onViewportChange,
-  onClose,
 }: {
-  readonly environmentId: EnvironmentId;
   readonly tab: PreviewSessionSnapshot;
   readonly ready: boolean;
-  readonly streaming: boolean;
   readonly onCommand: PreviewStreamRef["command"];
-  readonly onPaste: () => void;
-  readonly viewportSetting: PreviewViewportSetting;
-  readonly viewportEnabled: boolean;
-  readonly onViewportChange: (setting: PreviewViewportSetting, remember: boolean) => void;
-  readonly onClose?: () => void;
 }) {
   const url = browserTabUrl(tab);
   const [draft, setDraft] = useState<string | null>(null);
@@ -580,9 +707,6 @@ function BrowserAddressBar({
   };
   return (
     <View className="flex-row items-center gap-1 px-2 pb-2">
-      {onClose ? (
-        <ControlPill icon="xmark" accessibilityLabel="Close browser" onPress={onClose} />
-      ) : null}
       <ControlPill
         icon="chevron.left"
         accessibilityLabel="Back"
@@ -618,15 +742,46 @@ function BrowserAddressBar({
         disabled={!ready}
         onPress={() => onCommand({ type: "reload" })}
       />
-      <BrowserTabMenu
-        environmentId={environmentId}
-        tab={tab}
-        streaming={streaming}
-        onPaste={ready ? onPaste : undefined}
-        viewportSetting={viewportSetting}
-        viewportEnabled={viewportEnabled}
-        onViewportChange={onViewportChange}
-      />
     </View>
+  );
+}
+
+function BrowserToolbarAction({
+  icon,
+  label,
+  onPress,
+  disabled = false,
+}: {
+  readonly icon: AppSymbolName;
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly disabled?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      className="min-h-16 flex-1 items-center justify-center gap-1 px-2 py-2 active:bg-subtle"
+    >
+      <SymbolView
+        name={icon}
+        size={22}
+        tintColorClassName={disabled ? "accent-foreground-muted" : "accent-icon"}
+      />
+      <AppText className={disabled ? "text-xs text-foreground-muted" : "text-xs text-foreground"}>
+        {label}
+      </AppText>
+    </Pressable>
+  );
+}
+
+function BrowserOptionsHeading({ title }: { readonly title: string }) {
+  return (
+    <AppText className="px-4 pb-2 pt-5 text-sm font-t3-medium text-foreground-muted">
+      {title}
+    </AppText>
   );
 }

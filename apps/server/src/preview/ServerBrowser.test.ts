@@ -880,6 +880,24 @@ it.live("streams to a read-only viewer without allowing takeover, input, or view
           image: expect.objectContaining({ width: 844, height: 390 }),
         }),
       );
+      operatorSession.send.mockImplementation(async (method, params) => {
+        if (method === "Page.captureScreenshot") throw new Error("Screenshot unavailable");
+        return send(method, params);
+      });
+      yield* operator.input({
+        type: "viewport",
+        requestId: "failed-layout",
+        setting: { _tag: "freeform", width: 844, height: 390 },
+      });
+      expect(yield* Queue.takeAll(operator.output)).toContainEqual(
+        expect.objectContaining({
+          _tag: "viewportApplied",
+          requestId: "failed-layout",
+          image: null,
+          error: "Screenshot unavailable",
+        }),
+      );
+      operatorSession.send.mockImplementation(send);
       yield* operator.input({ type: "releaseControl" });
       expect(page.setViewportSize).toHaveBeenLastCalledWith({ width: 1280, height: 800 });
       const zoomApplied = Promise.withResolvers<void>();

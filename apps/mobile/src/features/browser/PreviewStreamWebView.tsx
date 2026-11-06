@@ -502,15 +502,24 @@ function PreviewStreamDocumentView({
               ? "Capturing element…"
               : layout?.state === "pending"
                 ? "Adapting page layout…"
-                : layout?.detail}
+                : layout?.state === "error"
+                  ? "Page size could not be confirmed. You can still view and zoom. Retry to enable taps and annotations."
+                  : layout?.detail}
           </AppText>
           {layout?.state === "error" ? (
-            <Button
-              label="Retry layout"
-              onPress={() =>
-                webView.current?.injectJavaScript("window.T3PreviewStream?.retryLayout(); true;")
-              }
-            />
+            <View className="flex-row items-center gap-2">
+              <Button
+                label="Retry layout"
+                onPress={() =>
+                  webView.current?.injectJavaScript("window.T3PreviewStream?.retryLayout(); true;")
+                }
+              />
+              <Button
+                label="Details"
+                tone="text"
+                onPress={() => Dialog.alert("Page layout unavailable", layout.detail)}
+              />
+            </View>
           ) : null}
         </View>
       ) : null}

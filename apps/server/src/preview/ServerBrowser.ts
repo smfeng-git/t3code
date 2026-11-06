@@ -2715,9 +2715,10 @@ const make = Effect.gen(function* () {
                       await applySetting(tab, request.setting);
                       const cssSize = tab.desktop ? size : (await layoutSize(tab))!;
                       const image = await runPromise(
-                        Effect.tryPromise(() =>
-                          captureAppliedViewport(tab.page, session, cssSize),
-                        ).pipe(Effect.timeout("8 seconds")),
+                        Effect.tryPromise({
+                          try: () => captureAppliedViewport(tab.page, session, cssSize),
+                          catch: ServerBrowserPage.toOperationError,
+                        }).pipe(Effect.timeout("8 seconds")),
                       );
                       if (tab.control.controller !== viewer.id)
                         throw new Error("Browser control changed.");
