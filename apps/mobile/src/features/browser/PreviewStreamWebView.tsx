@@ -503,10 +503,12 @@ function PreviewStreamDocumentView({
               : layout?.state === "pending"
                 ? "Adapting page layout…"
                 : layout?.state === "error"
-                  ? "Page size could not be confirmed. You can still view and zoom. Retry to enable taps and annotations."
-                  : layout?.detail}
+                  ? "Page size could not be confirmed. Taps and annotations are paused. Retry to restore the page."
+                  : layout?.state === "recovered"
+                    ? "The requested size was unavailable. You can use the page at its current size or retry."
+                    : layout?.detail}
           </AppText>
-          {layout?.state === "error" ? (
+          {layout?.state === "error" || layout?.state === "recovered" ? (
             <View className="flex-row items-center gap-2">
               <Button
                 label="Retry layout"

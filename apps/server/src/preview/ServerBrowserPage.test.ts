@@ -66,6 +66,13 @@ describe("server browser element refs", () => {
     const landscape = await captureAppliedViewport(page, cdp, { width: 800, height: 400 });
     expect(landscape).toMatchObject({ width: 800, height: 400 });
     expect(landscape.screenshot).toMatch(/^data:image\/jpeg;base64,/);
+    const recovered = await captureAppliedViewport(page, cdp, { width: 390, height: 844 });
+    expect(recovered).toMatchObject({
+      width: 800,
+      height: 400,
+      error: expect.stringContaining("390x844"),
+    });
+    expect(recovered.screenshot).toMatch(/^data:image\/jpeg;base64,/);
     expect(await page.locator("#target").count()).toBe(1);
     await expect(
       captureElementSelection(page, cdp, { x: 25, y: 35, pageUrl: "https://old.test" }),

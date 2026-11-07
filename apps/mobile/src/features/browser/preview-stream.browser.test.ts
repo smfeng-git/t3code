@@ -124,6 +124,9 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
       requestId: expect.any(String),
       setting: { _tag: "freeform", width: 400, height: 800 },
     });
+    expect(mocks.send.mock.calls.flat()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "resize" })]),
+    );
     mocks.paint.mockClear();
     events.onViewportApplied?.({
       type: "viewportApplied",
@@ -132,7 +135,7 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
       error: "Layout failed",
     });
     events.onFrame(new Uint8Array([1]).buffer);
-    expect(mocks.paint).toHaveBeenCalledOnce();
+    expect(mocks.paint).not.toHaveBeenCalled();
     mocks.send.mockClear();
     fitToScreen();
     expect(mocks.send).toHaveBeenCalledExactlyOnceWith({
@@ -256,6 +259,21 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
       type: "selectionPosition",
       side: "bottom",
     });
+    mocks.send.mockClear();
+    for (const [width, height] of [
+      [400, 700],
+      [800, 400],
+      [400, 800],
+      [800, 400],
+    ]) {
+      _container.mockReturnValue(new DOMRect(0, 0, width, height));
+      resized();
+      vi.advanceTimersByTime(150);
+      expect(mocks.send.mock.calls.flat()).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: "viewport" })]),
+      );
+    }
+    posted.mockClear();
     highlightElement(1, true);
     expect(posted.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(
       expect.objectContaining({
@@ -267,6 +285,15 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
       }),
     );
     selectElement(null);
+    expect(mocks.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "viewport",
+        setting: { _tag: "freeform", width: 800, height: 400 },
+      }),
+    );
+    _container.mockReturnValue(new DOMRect(0, 0, 400, 800));
+    resized();
+    vi.advanceTimersByTime(150);
     posted.mockClear();
     highlightElement(1, true);
     expect(posted).not.toHaveBeenCalled();
@@ -291,7 +318,7 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
     touch("pointermove", 2, 300, 200);
     touch("pointerup", 2, 300, 200);
     touch("pointerup", 1, 100, 200);
-    expect(canvas.parentElement?.style.transform).toContain("scale(4)");
+    expect(canvas.parentElement?.style.transform).toContain("scale(2)");
     expect(mocks.send).not.toHaveBeenCalled();
     fitToScreen();
     expect(mocks.send).not.toHaveBeenCalled();
@@ -316,11 +343,9 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
     _container.mockReturnValue(new DOMRect(0, 0, 800, 200));
     resized();
     vi.runOnlyPendingTimers();
-    expect(mocks.send).toHaveBeenCalledWith({
-      type: "viewport",
-      requestId: expect.any(String),
-      setting: { _tag: "freeform", width: 960, height: 240 },
-    });
+    expect(mocks.send.mock.calls.flat()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "viewport" })]),
+    );
     command({ type: "viewport", setting: { _tag: "freeform", width: 1280, height: 800 } });
     const fixed = mocks.send.mock.calls.at(-1)?.[0];
     if (!fixed || fixed.type !== "viewport" || !fixed.requestId)
@@ -329,7 +354,7 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
     vi.advanceTimersByTime(10_000);
     mocks.paint.mockClear();
     events.onFrame(new Uint8Array([2]).buffer);
-    expect(mocks.paint).toHaveBeenCalledOnce();
+    expect(mocks.paint).not.toHaveBeenCalled();
     expect(posted.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(
       expect.objectContaining({ type: "layout", state: "error" }),
     );
@@ -372,8 +397,11 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
       type: "viewportApplied",
       requestId: retried.requestId,
       image: { width: 1280, height: 800, screenshot: "data:image/jpeg;base64,YWI=" },
-      error: null,
+      error: "Requested layout unavailable; using actual size",
     });
+    expect(posted.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(
+      expect.objectContaining({ type: "layout", state: "recovered" }),
+    );
     touch("pointerdown", 1, 100, 100);
     touch("pointerup", 1, 100, 100);
     expect(mocks.send).toHaveBeenCalledWith(
@@ -407,6 +435,21 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
         screenshot: canvas.toDataURL("image/jpeg"),
       },
     });
+    _container.mockReturnValue(new DOMRect(0, 0, 400, 700));
+    resized();
+    vi.advanceTimersByTime(150);
+    posted.mockClear();
+    if (loadImage) (loadImage as () => void)();
+    highlightElement(0, true);
+    expect(posted.mock.calls.map(([value]) => JSON.parse(value))).toContainEqual(
+      expect.objectContaining({
+        type: "elementConfirmed",
+        selection: expect.objectContaining({ element, viewport: { width: 1280, height: 800 } }),
+      }),
+    );
+    _container.mockReturnValue(new DOMRect(0, 0, 400, 800));
+    resized();
+    vi.advanceTimersByTime(150);
     selectElement(null);
     posted.mockClear();
     if (loadImage) (loadImage as () => void)();
@@ -426,6 +469,26 @@ it("pinches locally, maps subsequent taps, and selects without activating the pa
         type: "viewport",
         setting: { _tag: "freeform", width: 1280, height: 800 },
       }),
+    );
+    mocks.send.mockClear();
+    fitToScreen();
+    expect(mocks.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "viewport",
+        setting: { _tag: "freeform", width: 400, height: 800 },
+      }),
+    );
+    vi.stubGlobal("screen", {
+      width: 400,
+      height: 800,
+      orientation: { type: "portrait-primary" },
+    });
+    mocks.send.mockClear();
+    _container.mockReturnValue(new DOMRect(0, 0, 400, 250));
+    resized();
+    vi.runOnlyPendingTimers();
+    expect(mocks.send.mock.calls.flat()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "viewport" })]),
     );
     posted.mockClear();
     events.onControl?.({ canOperate: true, controller: "agent", generation: 4, dialog: null });

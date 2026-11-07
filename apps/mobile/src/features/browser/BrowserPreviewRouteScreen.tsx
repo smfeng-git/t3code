@@ -21,7 +21,6 @@ import { useEffect, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { Sheet } from "../../components/ui/Sheet";
 import { NavigationRow } from "../../components/ui/NavigationRow";
 import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
 import { ControlPill } from "../../components/ui/ControlPill";
@@ -109,11 +108,13 @@ function BrowserPreviewScreen({
   const pendingRecent = useRef<{ tabId: string; width: number; height: number } | null>(null);
   const updatePreferences = useAtomSet(updateMobilePreferencesAtom);
   const dimensions = useWindowDimensions();
+  const [surfaceHeight, setSurfaceHeight] = useState(dimensions.height);
   const compactToolbar = Platform.OS === "android" && dimensions.width > dimensions.height;
   const navigation = useNavigation();
   const [landscape, setLandscape] = useState(compactToolbar);
   const [fullscreen, setFullscreen] = useState(compactToolbar);
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [optionsPage, setOptionsPage] = useState<"root" | "viewport" | "page">("root");
   if (landscape !== compactToolbar) {
     setLandscape(compactToolbar);
     setFullscreen(compactToolbar);
@@ -178,8 +179,10 @@ function BrowserPreviewScreen({
   }, [picking, pageUrl, streamRef]);
 
   useHardwareBack((fullscreen || picking || controlsOpen) && selection === null, () => {
-    if (controlsOpen) setControlsOpen(false);
-    else if (picking) {
+    if (controlsOpen) {
+      if (optionsPage !== "root") setOptionsPage("root");
+      else setControlsOpen(false);
+    } else if (picking) {
       setPicking(false);
       setCandidate(null);
     } else setFullscreen(false);
@@ -232,6 +235,7 @@ function BrowserPreviewScreen({
   return (
     <View
       className="flex-1 bg-sheet"
+      onLayout={(event) => setSurfaceHeight(event.nativeEvent.layout.height)}
       style={{
         paddingBottom: insets.bottom,
         paddingTop: compactToolbar || fullscreen ? insets.top : 0,
@@ -414,157 +418,145 @@ function BrowserPreviewScreen({
               <BrowserToolbarAction
                 icon="ellipsis"
                 label="More"
-                onPress={() => setControlsOpen(true)}
+                onPress={() => {
+                  setOptionsPage("root");
+                  setControlsOpen(true);
+                }}
               />
             </View>
           ) : null}
           {controlsOpen ? (
-            <Sheet
-              title="Browser options"
-              onClose={() => setControlsOpen(false)}
-              expanded={dimensions.width > dimensions.height}
+            <View
+              className="absolute inset-0 items-center justify-end"
+              style={{
+                zIndex: 2,
+                paddingTop: insets.top,
+                paddingBottom: insets.bottom,
+                paddingLeft: insets.left,
+                paddingRight: insets.right,
+              }}
             >
-              <ScrollView
-                className="flex-1 bg-sheet"
-                contentContainerStyle={{ paddingBottom: 24 }}
-                keyboardShouldPersistTaps="handled"
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss browser options"
+                onPress={() => setControlsOpen(false)}
+                className="absolute inset-0 bg-black/40"
+              />
+              <View
+                accessibilityViewIsModal
+                className="w-full overflow-hidden rounded-t-2xl bg-sheet"
+                style={{
+                  maxWidth: 640,
+                  height: Math.min(
+                    640,
+                    Math.max(0, surfaceHeight - insets.top - insets.bottom) * 0.9,
+                  ),
+                }}
               >
-                {fullscreen ? (
-                  <View className="flex-row border-b border-input-border px-2">
-                    <BrowserToolbarAction
-                      icon={picking ? "xmark" : "pencil"}
-                      label={picking ? "Cancel" : "Annotate"}
-                      disabled={!picking && !canAnnotate}
-                      onPress={togglePicking}
-                    />
-                    <BrowserToolbarAction
-                      icon="arrow.down.right.and.arrow.up.left"
-                      label="Exit fullscreen"
-                      onPress={() => withControlsClosed(() => setFullscreen(false))}
-                    />
-                    <BrowserToolbarAction
-                      icon="chevron.left"
-                      label="Close browser"
-                      onPress={onClose}
-                    />
-                  </View>
-                ) : null}
-                <BrowserOptionsHeading title="Phone display" />
-                <NavigationRow
-                  title="Reset zoom"
-                  subtitle="Only changes the view on this phone"
-                  leading={
-                    <SymbolView name="arrow.clockwise" size={22} tintColorClassName="accent-icon" />
-                  }
-                  onPress={() => withControlsClosed(() => streamRef.current?.resetZoom())}
-                />
-                {Platform.OS === "android" ? (
-                  <NavigationRow
-                    title="Rotate screen"
-                    leading={
-                      <SymbolView
-                        name="arrow.left.arrow.right"
-                        size={22}
-                        tintColorClassName="accent-icon"
-                      />
+                <View className="flex-row items-center gap-3 border-b border-input-border px-3 py-2">
+                  <ControlPill
+                    icon={optionsPage === "root" ? "xmark" : "chevron.left"}
+                    accessibilityLabel={
+                      optionsPage === "root" ? "Close browser options" : "Back to browser options"
                     }
                     onPress={() =>
-                      withControlsClosed(() => {
-                        void setBrowserOrientation(
-                          dimensions.width > dimensions.height ? "portrait" : "landscape",
-                        ).catch((error: unknown) =>
-                          Dialog.alert("Could not rotate", String(error)),
-                        );
-                      })
+                      optionsPage === "root" ? setControlsOpen(false) : setOptionsPage("root")
                     }
                   />
-                ) : null}
-                <BrowserOptionsHeading title="PC page layout" />
-                <NavigationRow
-                  title="Auto-fit layout"
-                  subtitle="Fit the shared page to this phone"
-                  disabled={!viewportEnabled}
-                  trailing={
-                    viewportSetting._tag === "fill" ? (
-                      <SymbolView
-                        name="checkmark"
-                        size={20}
-                        tintColorClassName="accent-primary-text"
-                      />
-                    ) : null
-                  }
-                  onPress={() => changeViewport({ _tag: "fill" })}
-                />
-                <BrowserTabMenu
-                  environmentId={environmentId}
-                  tab={tab}
-                  streaming={streaming}
-                  viewportSetting={viewportSetting}
-                  viewportEnabled={viewportEnabled}
-                  onViewportChange={changeViewport}
-                  mode="viewport"
-                >
-                  <NavigationRow
-                    title="Page size"
-                    subtitle={
-                      viewportSetting._tag === "fill"
-                        ? "Presets and custom dimensions"
-                        : `${viewportSetting.width} × ${viewportSetting.height}`
-                    }
-                    disabled={!viewportEnabled}
-                  />
-                </BrowserTabMenu>
-                <BrowserOptionsHeading title="Control" />
-                {control?.canOperate ? (
-                  <NavigationRow
-                    title={canControl ? "Release control" : "Take control"}
-                    subtitle={
-                      control.controller === "another-viewer"
-                        ? "Another device has control"
-                        : canControl
-                          ? "Switch to view only"
-                          : "Interact with the shared PC page"
-                    }
-                    disabled={control.controller === "another-viewer"}
-                    onPress={() =>
-                      withControlsClosed(() =>
-                        streamRef.current?.command({
-                          type: canControl ? "releaseControl" : "takeControl",
-                        }),
-                      )
-                    }
-                  />
-                ) : (
-                  <AppText className="px-4 py-3 text-sm text-foreground-muted">
-                    This connection has view-only access.
+                  <AppText className="flex-1 text-base font-t3-medium text-foreground">
+                    {optionsPage === "root"
+                      ? "Browser options"
+                      : optionsPage === "viewport"
+                        ? "Page size"
+                        : "Page options"}
                   </AppText>
-                )}
-                <BrowserTabMenu
-                  environmentId={environmentId}
-                  tab={tab}
-                  streaming={streaming && canControl && !picking}
-                  onPaste={
-                    canControl && !picking
-                      ? () => withControlsClosed(() => streamRef.current?.paste())
-                      : undefined
-                  }
-                  mode="page"
+                </View>
+                <ScrollView
+                  key={optionsPage}
+                  style={{ flex: 1, minHeight: 0 }}
+                  contentContainerStyle={{ paddingBottom: 24 }}
+                  keyboardShouldPersistTaps="handled"
+                  nestedScrollEnabled
                 >
-                  <NavigationRow
-                    title="Page options"
-                    subtitle="Appearance, page zoom and site data"
-                  />
-                </BrowserTabMenu>
-                {tabs.length > 1 ? (
-                  <>
-                    <BrowserOptionsHeading title="Open tabs" />
-                    {tabs.map((entry) => (
+                  {optionsPage !== "root" ? (
+                    <BrowserTabMenu
+                      inline
+                      mode={optionsPage}
+                      environmentId={environmentId}
+                      tab={tab}
+                      streaming={streaming && canControl && !picking}
+                      viewportSetting={viewportSetting}
+                      viewportEnabled={viewportEnabled}
+                      onViewportChange={changeViewport}
+                      onPaste={
+                        canControl && !picking
+                          ? () => withControlsClosed(() => streamRef.current?.paste())
+                          : undefined
+                      }
+                    />
+                  ) : (
+                    <>
+                      {fullscreen ? (
+                        <View className="flex-row border-b border-input-border px-2">
+                          <BrowserToolbarAction
+                            icon={picking ? "xmark" : "pencil"}
+                            label={picking ? "Cancel" : "Annotate"}
+                            disabled={!picking && !canAnnotate}
+                            onPress={togglePicking}
+                          />
+                          <BrowserToolbarAction
+                            icon="arrow.down.right.and.arrow.up.left"
+                            label="Exit fullscreen"
+                            onPress={() => withControlsClosed(() => setFullscreen(false))}
+                          />
+                          <BrowserToolbarAction
+                            icon="chevron.left"
+                            label="Close browser"
+                            onPress={onClose}
+                          />
+                        </View>
+                      ) : null}
+                      <BrowserOptionsHeading title="Phone display" />
                       <NavigationRow
-                        key={entry.tabId}
-                        title={browserTabTitle(entry)}
-                        subtitle={browserTabUrl(entry)}
+                        title="Reset zoom"
+                        subtitle="Only changes the view on this phone"
+                        leading={
+                          <SymbolView
+                            name="arrow.clockwise"
+                            size={22}
+                            tintColorClassName="accent-icon"
+                          />
+                        }
+                        onPress={() => withControlsClosed(() => streamRef.current?.resetZoom())}
+                      />
+                      {Platform.OS === "android" ? (
+                        <NavigationRow
+                          title="Rotate screen"
+                          leading={
+                            <SymbolView
+                              name="arrow.left.arrow.right"
+                              size={22}
+                              tintColorClassName="accent-icon"
+                            />
+                          }
+                          onPress={() =>
+                            withControlsClosed(() => {
+                              void setBrowserOrientation(
+                                dimensions.width > dimensions.height ? "portrait" : "landscape",
+                              ).catch((error: unknown) =>
+                                Dialog.alert("Could not rotate", String(error)),
+                              );
+                            })
+                          }
+                        />
+                      ) : null}
+                      <BrowserOptionsHeading title="PC page layout" />
+                      <NavigationRow
+                        title="Auto-fit layout"
+                        subtitle="Fit the shared page to this phone"
+                        disabled={!viewportEnabled}
                         trailing={
-                          entry.tabId === tabId ? (
+                          viewportSetting._tag === "fill" ? (
                             <SymbolView
                               name="checkmark"
                               size={20}
@@ -572,13 +564,75 @@ function BrowserPreviewScreen({
                             />
                           ) : null
                         }
-                        onPress={() => withControlsClosed(() => selectTab(entry.tabId))}
+                        onPress={() => changeViewport({ _tag: "fill" })}
                       />
-                    ))}
-                  </>
-                ) : null}
-              </ScrollView>
-            </Sheet>
+                      <NavigationRow
+                        title="Page size"
+                        subtitle={
+                          viewportSetting._tag === "fill"
+                            ? "Presets and custom dimensions"
+                            : `${viewportSetting.width} × ${viewportSetting.height}`
+                        }
+                        disabled={!viewportEnabled}
+                        onPress={() => setOptionsPage("viewport")}
+                      />
+                      <BrowserOptionsHeading title="Control" />
+                      {control?.canOperate ? (
+                        <NavigationRow
+                          title={canControl ? "Release control" : "Take control"}
+                          subtitle={
+                            control.controller === "another-viewer"
+                              ? "Another device has control"
+                              : canControl
+                                ? "Switch to view only"
+                                : "Interact with the shared PC page"
+                          }
+                          disabled={control.controller === "another-viewer"}
+                          onPress={() =>
+                            withControlsClosed(() =>
+                              streamRef.current?.command({
+                                type: canControl ? "releaseControl" : "takeControl",
+                              }),
+                            )
+                          }
+                        />
+                      ) : (
+                        <AppText className="px-4 py-3 text-sm text-foreground-muted">
+                          This connection has view-only access.
+                        </AppText>
+                      )}
+                      <NavigationRow
+                        title="Page options"
+                        subtitle="Appearance, page zoom and site data"
+                        onPress={() => setOptionsPage("page")}
+                      />
+                      {tabs.length > 1 ? (
+                        <>
+                          <BrowserOptionsHeading title="Open tabs" />
+                          {tabs.map((entry) => (
+                            <NavigationRow
+                              key={entry.tabId}
+                              title={browserTabTitle(entry)}
+                              subtitle={browserTabUrl(entry)}
+                              trailing={
+                                entry.tabId === tabId ? (
+                                  <SymbolView
+                                    name="checkmark"
+                                    size={20}
+                                    tintColorClassName="accent-primary-text"
+                                  />
+                                ) : null
+                              }
+                              onPress={() => withControlsClosed(() => selectTab(entry.tabId))}
+                            />
+                          ))}
+                        </>
+                      ) : null}
+                    </>
+                  )}
+                </ScrollView>
+              </View>
+            </View>
           ) : null}
           {candidate ? (
             <View
@@ -669,7 +723,10 @@ function BrowserPreviewScreen({
               <ControlPill
                 icon="ellipsis"
                 accessibilityLabel="Show browser controls"
-                onPress={() => setControlsOpen(true)}
+                onPress={() => {
+                  setOptionsPage("root");
+                  setControlsOpen(true);
+                }}
               />
             </View>
           ) : null}

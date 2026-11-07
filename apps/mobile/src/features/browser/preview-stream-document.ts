@@ -22,7 +22,7 @@ export interface PreviewStreamConfiguration {
 
 export interface PreviewLayoutState {
   readonly type: "layout";
-  readonly state: "pending" | "ready" | "error" | "unsupported";
+  readonly state: "pending" | "ready" | "recovered" | "error" | "unsupported";
   readonly setting: PreviewViewportSetting;
   readonly detail?: string;
 }

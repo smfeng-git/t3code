@@ -230,7 +230,6 @@ export function start(configuration: PreviewStreamConfiguration) {
   let layoutSetting: PreviewViewportSetting = configuration.viewport ?? { _tag: "fill" };
   let fittingViewport = layoutSetting._tag === "fill";
   let layoutRequest: string | null = null;
-  let layoutFailed = false;
   let layoutTimer: ReturnType<typeof setTimeout> | null = null;
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
   let wheelFrame: number | null = null;
@@ -303,13 +302,11 @@ export function start(configuration: PreviewStreamConfiguration) {
     input.disabled = !interactive;
     const requestId = `layout-${++requestSequence}`;
     layoutRequest = requestId;
-    layoutFailed = false;
     post({ type: "layout", state: "pending", setting: layoutSetting });
     painter.stop();
     if (layoutTimer !== null) clearTimeout(layoutTimer);
     layoutTimer = setTimeout(() => {
       if (layoutRequest !== requestId) return;
-      layoutFailed = true;
       painter.stop();
       painter = createPreviewFramePainter(canvas, painted);
       post({
@@ -321,13 +318,21 @@ export function start(configuration: PreviewStreamConfiguration) {
     }, 10_000);
     send({ type: "viewport", setting, requestId });
   };
-  const resizeViewport = () => {
+  let autoLandscape: boolean | null = null;
+  const resizeViewport = (force = false) => {
     if (
       fittingViewport &&
+      (!pickUrl || force) &&
       control?.controller === "you" &&
       size &&
       document.activeElement !== input
     ) {
+      const orientation = window.screen.orientation?.type;
+      const landscape = orientation
+        ? orientation.startsWith("landscape")
+        : size.width > size.height;
+      if (!force && autoLandscape === landscape) return;
+      autoLandscape = landscape;
       const scale = Math.min(
         Math.max(1, PREVIEW_VIEWPORT_MIN_DIMENSION / Math.min(size.width, size.height)),
         PREVIEW_VIEWPORT_MAX_DIMENSION / Math.max(size.width, size.height),
@@ -372,14 +377,13 @@ export function start(configuration: PreviewStreamConfiguration) {
       },
       {
         onFrame: (jpeg) => {
-          if (layoutRequest === null || layoutFailed) painter.paint(jpeg);
+          if (layoutRequest === null) painter.paint(jpeg);
         },
         onViewportApplied: (result) => {
           if (result.requestId !== layoutRequest || stopped || control?.controller !== "you")
             return;
           const image = result.image;
           if (!image) {
-            layoutFailed = true;
             painter.stop();
             painter = createPreviewFramePainter(canvas, painted);
             if (layoutTimer !== null) clearTimeout(layoutTimer);
@@ -392,7 +396,6 @@ export function start(configuration: PreviewStreamConfiguration) {
             });
             return;
           }
-          layoutFailed = false;
           painter.stop();
           painter = createPreviewFramePainter(canvas, () => {
             if (layoutRequest === result.requestId) {
@@ -401,7 +404,12 @@ export function start(configuration: PreviewStreamConfiguration) {
               viewport = { width: image.width, height: image.height };
               layoutRequest = null;
               post({ type: "viewport", ...viewport });
-              post({ type: "layout", state: "ready", setting: layoutSetting });
+              post({
+                type: "layout",
+                state: result.error ? "recovered" : "ready",
+                setting: layoutSetting,
+                ...(result.error ? { detail: result.error } : {}),
+              });
             }
             painted();
           });
@@ -487,8 +495,7 @@ export function start(configuration: PreviewStreamConfiguration) {
           } else {
             input.disabled = !interactive;
             if (interactive && size && previous?.controller !== "you") {
-              if (nextControl.viewportSync) next.send({ type: "resize", ...size });
-              if (fittingViewport) resizeViewport();
+              if (fittingViewport) resizeViewport(true);
               else applyViewport(layoutSetting);
             }
           }
@@ -519,17 +526,13 @@ export function start(configuration: PreviewStreamConfiguration) {
     const rect = container.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return;
     const next = { width: Math.round(rect.width), height: Math.round(rect.height) };
-    if (size?.width === next.width && size.height === next.height) return;
+    if (size?.width === next.width && size.height === next.height) {
+      resizeViewport();
+      return;
+    }
     if (size && size.width !== next.width && document.activeElement === input) input.blur();
     size = next;
-    cancelPick();
-    if (pickUrl) {
-      clearSelection();
-      pickUrl = null;
-      post({ type: "selectionCleared", detail: "Screen size changed. Select an element again." });
-    }
     resetZoom();
-    if (interactive && control?.viewportSync) send({ type: "resize", ...next });
     resizeViewport();
     const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
     const side = Math.max(next.width, next.height, window.screen.width, window.screen.height);
@@ -540,10 +543,13 @@ export function start(configuration: PreviewStreamConfiguration) {
     cap = { width: Math.max(width, cap?.width ?? 0), height: Math.max(height, cap?.height ?? 0) };
     connect();
   };
-  const observer = new ResizeObserver(() => {
+  const scheduleMeasure = () => {
     if (resizeTimer !== null) clearTimeout(resizeTimer);
     resizeTimer = setTimeout(measure, size === null ? 0 : RESIZE_DEBOUNCE_MS);
-  });
+  };
+  const observer = new ResizeObserver(scheduleMeasure);
+  const orientation = window.screen.orientation;
+  orientation?.addEventListener?.("change", scheduleMeasure);
   observer.observe(container);
 
   // iOS keeps its layout viewport under the keyboard; resize to the visual viewport.
@@ -1059,10 +1065,10 @@ export function start(configuration: PreviewStreamConfiguration) {
       if (control?.controller !== "you") return;
       fittingViewport = true;
       layoutSetting = { _tag: "fill" };
-      resizeViewport();
+      resizeViewport(true);
     },
     resetZoom,
-    retryLayout: () => (fittingViewport ? resizeViewport() : applyViewport(layoutSetting)),
+    retryLayout: () => (fittingViewport ? resizeViewport(true) : applyViewport(layoutSetting)),
     highlightElement,
     selectElement: (url) => {
       clearSelection();
@@ -1072,12 +1078,14 @@ export function start(configuration: PreviewStreamConfiguration) {
       probe = null;
       touch = null;
       input.blur();
+      if (url === null) resizeViewport();
     },
     stop: () => {
       stopped = true;
       cancelPick();
       fingers.clear();
       observer.disconnect();
+      orientation?.removeEventListener?.("change", scheduleMeasure);
       visualViewport?.removeEventListener("resize", followVisualViewport);
       visualViewport?.removeEventListener("scroll", followVisualViewport);
       if (resizeTimer !== null) clearTimeout(resizeTimer);

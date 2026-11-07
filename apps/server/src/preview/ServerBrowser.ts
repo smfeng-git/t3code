@@ -2695,26 +2695,26 @@ const make = Effect.gen(function* () {
               const requestId = message.requestId.slice(0, 100);
               try {
                 const request = decodeViewportSync(message);
-                await tab.control.human(viewer.id, () =>
+                await tab.control.humanLatest(viewer.id, "viewport", request, (latest) =>
                   withCaptureLock(tab, async () => {
                     // Keep background Electron guests painting while discarding transitional frames.
                     tab.capturing += 1;
                     try {
                       if (tab.dialog)
                         throw new Error("Close the page dialog before adapting its layout.");
-                      const size = fixedViewportSize(request.setting);
+                      const size = fixedViewportSize(latest.setting);
                       if (!size) throw new Error("Choose a fixed size or fit to this device.");
                       viewer.savedViewport ??= tab.setting;
                       await runPromise(
                         manager.resize({
                           threadId: tab.threadId,
                           tabId: tab.tabId,
-                          viewport: request.setting,
+                          viewport: latest.setting,
                         }),
                       );
-                      await applySetting(tab, request.setting);
+                      await applySetting(tab, latest.setting);
                       const cssSize = tab.desktop ? size : (await layoutSize(tab))!;
-                      const image = await runPromise(
+                      const { error, ...image } = await runPromise(
                         Effect.tryPromise({
                           try: () => captureAppliedViewport(tab.page, session, cssSize),
                           catch: ServerBrowserPage.toOperationError,
@@ -2722,7 +2722,12 @@ const make = Effect.gen(function* () {
                       );
                       if (tab.control.controller !== viewer.id)
                         throw new Error("Browser control changed.");
-                      viewer.push({ _tag: "viewportApplied", requestId, image, error: null });
+                      viewer.push({
+                        _tag: "viewportApplied",
+                        requestId: latest.requestId,
+                        image,
+                        error,
+                      });
                     } finally {
                       tab.capturing -= 1;
                     }

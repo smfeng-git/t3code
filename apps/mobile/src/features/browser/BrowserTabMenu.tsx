@@ -1,5 +1,9 @@
 import * as Dialog from "../../components/ui/Dialog";
 import type { ReactElement } from "react";
+import { View } from "react-native";
+import { NavigationRow } from "../../components/ui/NavigationRow";
+import { AppText } from "../../components/ui/AppText";
+import { SymbolView } from "../../components/ui/AppSymbol";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
@@ -67,7 +71,9 @@ export function BrowserTabMenu({
   viewportEnabled = true,
   mode = "all",
   children,
+  inline = false,
 }: {
+  readonly inline?: boolean;
   readonly mode?: "all" | "viewport" | "page";
   readonly children?: ReactElement;
   readonly environmentId: EnvironmentId;
@@ -258,6 +264,55 @@ export function BrowserTabMenu({
     }
   };
 
+  const visibleActions =
+    mode === "viewport"
+      ? viewportEnabled
+        ? actions.find((action) => action.id === "viewport")!.subactions!
+        : []
+      : streaming
+        ? actions.filter((action) => mode !== "page" || action.id !== "viewport")
+        : [closeAction];
+
+  if (inline) {
+    const renderAction = (action: MenuAction) => (
+      <NavigationRow
+        key={action.id}
+        title={action.title}
+        titleClassName={action.attributes?.destructive ? "text-danger-foreground" : undefined}
+        disabled={action.attributes?.disabled}
+        trailing={
+          action.state === "on" ? (
+            <SymbolView name="checkmark" size={20} tintColorClassName="accent-primary-text" />
+          ) : null
+        }
+        onPress={() => {
+          if (action.id) onAction(action.id);
+        }}
+      />
+    );
+    return (
+      <View>
+        {visibleActions.map((action) =>
+          action.subactions ? (
+            <View key={action.id}>
+              <AppText className="px-4 pb-2 pt-4 text-sm text-foreground-muted">
+                {action.title}
+              </AppText>
+              {action.subactions.map(renderAction)}
+            </View>
+          ) : (
+            renderAction(action)
+          ),
+        )}
+        {visibleActions.length === 0 ? (
+          <AppText className="p-4 text-sm text-foreground-muted">
+            Take control of the connected page to change its size.
+          </AppText>
+        ) : null}
+      </View>
+    );
+  }
+
   return (
     <Menu
       // Remount when streaming changes, so an open menu never keeps offering
@@ -266,15 +321,7 @@ export function BrowserTabMenu({
       accessible
       accessibilityLabel={mode === "viewport" ? "Page size" : "Browser tab options"}
       accessibilityRole="button"
-      actions={
-        mode === "viewport"
-          ? viewportEnabled
-            ? actions.find((action) => action.id === "viewport")!.subactions!
-            : []
-          : streaming
-            ? actions.filter((action) => mode !== "page" || action.id !== "viewport")
-            : [closeAction]
-      }
+      actions={visibleActions}
       onPressAction={({ nativeEvent }) => onAction(nativeEvent.event)}
     >
       {children ?? <ControlPill icon="ellipsis" accessibilityLabel="Browser tab options" />}

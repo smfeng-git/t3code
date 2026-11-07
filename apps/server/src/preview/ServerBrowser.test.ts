@@ -1375,6 +1375,67 @@ it.effect.each([
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("applies only the latest queued viewport while preserving running input", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      const page = contexts[0]!.page;
+      const session = contexts[0]!.sessions.at(-1)!;
+      const send = session.send.getMockImplementation()!;
+      const started = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => finish.resolve()));
+      session.send.mockImplementationOnce(async (method, input) => {
+        started.resolve();
+        await finish.promise;
+        return send(method, input);
+      });
+      const running = yield* viewer
+        .input({ type: "text", text: "before rotation" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Effect.promise(() => started.promise);
+      page.setViewportSize.mockClear();
+      const waiting = yield* Effect.forEach(
+        [
+          { width: 390, height: 844 },
+          { width: 844, height: 390 },
+          { width: 412, height: 915 },
+        ],
+        (size, index) =>
+          viewer
+            .input({
+              type: "viewport",
+              requestId: `rotation-${index}`,
+              setting: { _tag: "freeform", ...size },
+            })
+            .pipe(Effect.forkScoped({ startImmediately: true })),
+      );
+      finish.resolve();
+      yield* Effect.forEach([running, ...waiting], Fiber.join);
+      expect(page.setViewportSize.mock.calls.map(([size]) => size)).not.toContainEqual({
+        width: 390,
+        height: 844,
+      });
+      expect(page.setViewportSize.mock.calls.map(([size]) => size)).not.toContainEqual({
+        width: 844,
+        height: 390,
+      });
+      expect(page.viewportSize()).toEqual({ width: 412, height: 915 });
+      expect(
+        (yield* Queue.takeAll(viewer.output)).filter((item) => item._tag === "viewportApplied"),
+      ).toEqual([
+        expect.objectContaining({
+          requestId: "rotation-2",
+          error: null,
+          image: expect.objectContaining({ width: 412, height: 915 }),
+        }),
+      ]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("only the controlling viewer's copy and cut keys reach its clipboard", () =>
   Effect.scoped(
     Effect.gen(function* () {
